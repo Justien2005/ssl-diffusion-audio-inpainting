@@ -1,0 +1,22 @@
+# Core audio/data stack
+librosa
+soundfile
+audioread
+numpy
+pandas
+scipy
+resampy
+torchvggish
+tqdm
+matplotlib
+
+# Model stack
+torch
+transformers
+accelerate
+einops
+timm
+
+# Evaluation
+visqol-lib-py
+git+https://github.com/ashvala/AQUA-tk.git
