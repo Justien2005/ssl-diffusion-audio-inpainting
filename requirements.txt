@@ -18,5 +18,5 @@ einops
 timm
 
 # Evaluation
-visqol-lib-py
-git+https://github.com/ashvala/AQUA-tk.git
+# visqol-lib-py
+# git+https://github.com/ashvala/AQUA-tk.git
