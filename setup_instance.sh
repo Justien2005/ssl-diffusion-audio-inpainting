@@ -56,7 +56,25 @@ fi
 export PYTHON_BIN_PATH="$(python -c 'import sys; print(sys.executable)')"
 export PYTHON_LIB_PATH="$(python -c 'import site; print(site.getsitepackages()[0])')"
 python -c "import numpy; print('numpy for ViSQOL build:', numpy.__version__, numpy.get_include())"
-pip install --no-build-isolation --no-cache-dir "git+https://github.com/google/visqol.git"
+if [ ! -d external/visqol/.git ]; then
+  git clone https://github.com/google/visqol.git external/visqol
+fi
+(
+  cd external/visqol
+  bazel build -c opt //:similarity_result_py_pb2 //:visqol_config_py_pb2 //python:visqol_lib_py.so
+)
+pip install --no-deps --no-build-isolation --no-cache-dir "git+https://github.com/google/visqol.git" || true
+VISQOL_SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
+mkdir -p "$VISQOL_SITE/visqol/pb2" "$VISQOL_SITE/visqol/model"
+cp external/visqol/bazel-bin/python/visqol_lib_py.so "$VISQOL_SITE/visqol/visqol_lib_py.so"
+cp external/visqol/bazel-bin/similarity_result_pb2.py "$VISQOL_SITE/visqol/pb2/similarity_result_pb2.py"
+cp external/visqol/bazel-bin/visqol_config_pb2.py "$VISQOL_SITE/visqol/pb2/visqol_config_pb2.py"
+cp external/visqol/bazel-bin/similarity_result_pb2.py "$VISQOL_SITE/similarity_result_pb2.py"
+cp external/visqol/bazel-bin/visqol_config_pb2.py "$VISQOL_SITE/visqol_config_pb2.py"
+cp external/visqol/model/libsvm_nu_svr_model.txt "$VISQOL_SITE/visqol/model/libsvm_nu_svr_model.txt"
+cp external/visqol/model/lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite \
+  "$VISQOL_SITE/visqol/model/lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite"
+touch "$VISQOL_SITE/visqol/__init__.py" "$VISQOL_SITE/visqol/pb2/__init__.py"
 
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
 pip install --force-reinstall torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
