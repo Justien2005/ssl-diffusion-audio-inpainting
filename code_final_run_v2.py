@@ -3107,6 +3107,18 @@ def build_audiomae_encoder(device):
         raise RuntimeError(f"Repo AudioMAE tidak ditemukan: {AUDIO_MAE_DIR}")
     if AUDIO_MAE_DIR not in sys.path:
         sys.path.insert(0, AUDIO_MAE_DIR)
+    # AudioMAE repo targets older PyTorch where torch._six still existed.
+    try:
+        import types
+        import math as _math
+        import collections.abc as _container_abcs
+        if "torch._six" not in sys.modules:
+            _six = types.ModuleType("torch._six")
+            _six.inf = _math.inf
+            _six.container_abcs = _container_abcs
+            sys.modules["torch._six"] = _six
+    except Exception:
+        pass
 
     try:
         import models_mae
