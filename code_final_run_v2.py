@@ -1158,7 +1158,7 @@ def _find_visqol_model_path():
     if env_path and os.path.isfile(env_path):
         return env_path
 
-    from visqol import visqol_lib_py
+    visqol_lib_py, _ = _import_visqol_modules()
 
     search_roots = []
     for module_file in [getattr(visqol_lib_py, "__file__", None)]:
@@ -1182,10 +1182,22 @@ def _find_visqol_model_path():
     )
 
 
+def _import_visqol_modules():
+    """Import google/visqol modules across namespace-package layouts."""
+    import importlib
+
+    try:
+        visqol_lib_py = importlib.import_module("visqol.visqol_lib_py")
+    except ImportError:
+        from visqol import visqol_lib_py
+
+    visqol_config_pb2 = importlib.import_module("visqol.pb2.visqol_config_pb2")
+    return visqol_lib_py, visqol_config_pb2
+
+
 def _compute_visqol_odg(original, reconstructed, sr):
     """Fallback perceptual ODG via ViSQOL music mode."""
-    from visqol import visqol_lib_py
-    from visqol.pb2 import visqol_config_pb2
+    visqol_lib_py, visqol_config_pb2 = _import_visqol_modules()
 
     config = visqol_config_pb2.VisqolConfig()
     config.audio.sample_rate = 48000

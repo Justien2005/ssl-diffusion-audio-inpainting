@@ -113,8 +113,10 @@ chmod +x env_instance.sh
 echo "==> Compile check"
 source env_instance.sh
 python - <<'PY'
-from visqol import visqol_lib_py
-from visqol.pb2 import visqol_config_pb2
+import importlib
+
+visqol_lib_py = importlib.import_module("visqol.visqol_lib_py")
+visqol_config_pb2 = importlib.import_module("visqol.pb2.visqol_config_pb2")
 print("visqol:", visqol_lib_py.__file__)
 print("visqol config:", visqol_config_pb2.VisqolConfig().__class__.__name__)
 PY
