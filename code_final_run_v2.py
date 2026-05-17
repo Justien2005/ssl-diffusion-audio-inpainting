@@ -1152,94 +1152,55 @@ def _try_aquatk_peaqb(original, reconstructed, sr):
     return None
 
 
-def _find_visqol_model_path():
-    """Find google/visqol audio-mode SVR model installed with the package."""
-    env_path = os.environ.get("VISQOL_MODEL_PATH")
-    if env_path and os.path.isfile(env_path):
-        return env_path
+def _ensure_pyvisqol_model(pyvisqol_module, filename):
+    """Ensure pyvisqol's expected model file exists in its package model dir."""
+    package_dir = os.path.dirname(pyvisqol_module.__file__)
+    model_dir = os.path.join(package_dir, "model")
+    model_path = os.path.join(model_dir, filename)
+    if os.path.isfile(model_path):
+        return model_path
 
-    visqol_lib_py, _ = _import_visqol_modules()
-
-    search_roots = []
-    for module_file in [getattr(visqol_lib_py, "__file__", None)]:
-        if module_file:
-            module_dir = os.path.abspath(os.path.dirname(module_file))
-            search_roots.extend([module_dir, os.path.dirname(module_dir)])
-
-    for root in dict.fromkeys(search_roots):
-        candidate = os.path.join(root, "model", "libsvm_nu_svr_model.txt")
-        if os.path.isfile(candidate):
-            return candidate
-
-    for root in dict.fromkeys(search_roots):
-        for dirpath, _, filenames in os.walk(root):
-            if "libsvm_nu_svr_model.txt" in filenames:
-                return os.path.join(dirpath, "libsvm_nu_svr_model.txt")
-
-    raise FileNotFoundError(
-        "ViSQOL audio model libsvm_nu_svr_model.txt tidak ditemukan. "
-        "Install google/visqol via setup_instance.sh atau set VISQOL_MODEL_PATH."
-    )
-
-
-def _import_visqol_modules():
-    """Import google/visqol modules across namespace-package layouts."""
-    import importlib
-    _patch_protobuf_message_factory()
-
-    def import_first(candidates):
-        last_exc = None
-        for name in candidates:
-            try:
-                return importlib.import_module(name)
-            except ImportError as exc:
-                last_exc = exc
-        raise last_exc
-
-    visqol_lib_py = import_first([
-        "visqol_lib_py",
-        "visqol.visqol_lib_py",
-        "python.visqol_lib_py",
-    ])
-    visqol_config_pb2 = import_first([
-        "visqol_config_pb2",
-        "visqol.pb2.visqol_config_pb2",
-    ])
-    return visqol_lib_py, visqol_config_pb2
-
-
-def _patch_protobuf_message_factory():
-    """Restore GetPrototype alias for older ViSQOL bindings on protobuf 4.x."""
+    os.makedirs(model_dir, exist_ok=True)
     try:
-        from google.protobuf import message_factory
-    except Exception:
-        return
+        from modelscope.hub.file_download import model_file_download
+    except Exception as exc:
+        raise FileNotFoundError(
+            f"Model pyvisqol {filename} tidak ditemukan dan modelscope tidak tersedia."
+        ) from exc
 
-    factory_cls = getattr(message_factory, "MessageFactory", None)
-    get_message_class = getattr(message_factory, "GetMessageClass", None)
-    if factory_cls and get_message_class and not hasattr(factory_cls, "GetPrototype"):
-        factory_cls.GetPrototype = lambda self, descriptor: get_message_class(descriptor)
+    last_exc = None
+    for remote_path in [f"model/{filename}", filename]:
+        try:
+            downloaded = model_file_download("pengzhendong/visqol", remote_path)
+            shutil.copyfile(downloaded, model_path)
+            return model_path
+        except Exception as exc:
+            last_exc = exc
+
+    raise FileNotFoundError(f"Gagal download model pyvisqol {filename}.") from last_exc
 
 
 def _compute_visqol_odg(original, reconstructed, sr):
-    """Fallback perceptual ODG via ViSQOL music mode."""
-    visqol_lib_py, visqol_config_pb2 = _import_visqol_modules()
-
-    config = visqol_config_pb2.VisqolConfig()
-    config.audio.sample_rate = 48000
-    config.options.use_speech_scoring = False  # music mode
-    config.options.svr_model_path = _find_visqol_model_path()
-
-    api = visqol_lib_py.VisqolApi()
-    api.Create(config)
+    """Fallback perceptual ODG via pyvisqol audio mode."""
+    import pyvisqol
+    from pyvisqol import visqol_lib_py
+    from pyvisqol.pb2 import visqol_config_pb2
 
     orig_48k = librosa.resample(original, orig_sr=sr, target_sr=48000).astype(np.float64)
     recon_48k = librosa.resample(reconstructed, orig_sr=sr, target_sr=48000).astype(np.float64)
     n = min(len(orig_48k), len(recon_48k))
     orig_48k, recon_48k = orig_48k[:n], recon_48k[:n]
 
-    moslqo = api.Measure(orig_48k, recon_48k).moslqo  # 1.0 .. 5.0
-    return float(moslqo - 5.0)  # Map to [-4, 0] range
+    model_path = _ensure_pyvisqol_model(pyvisqol, "libsvm_nu_svr_model.txt")
+    config = visqol_config_pb2.VisqolConfig()
+    config.audio.sample_rate = 48000
+    config.options.use_speech_scoring = False
+    config.options.svr_model_path = model_path
+
+    api = visqol_lib_py.VisqolApi()
+    api.Create(config)
+    moslqo = api.Measure(orig_48k, recon_48k).moslqo
+    return float(np.clip(moslqo - 5.0, -4.0, 0.0))
 
 
 def _compute_nsim_odg(original, reconstructed, sr):

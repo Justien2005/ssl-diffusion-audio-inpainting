@@ -5,7 +5,6 @@ audioread
 numpy==1.26.4
 pandas
 scipy
-protobuf==4.25.8
 resampy
 torchvggish
 tqdm
@@ -25,6 +24,5 @@ wandb
 gdown
 
 # Evaluation
-# ViSQOL is installed by setup_instance.sh from google/visqol because it needs
-# Bazel/native build dependencies before pip install.
+pyvisqol
 # git+https://github.com/ashvala/AQUA-tk.git
