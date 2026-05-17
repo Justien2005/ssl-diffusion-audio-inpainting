@@ -138,7 +138,7 @@ for pkg in packages:
     subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q"], capture_output=True)
 
 # Clone repo CQT-Diff+ dari GitHub ke folder portabel.
-# Repo resmi: https://github.com/eloimoliner/CQT_diff
+# Repo resmi: https://github.com/eloimoliner/CQTdiff
 # Vast.ai/local: gunakan PROJECT_ROOT (default: current working directory), bukan path Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 EXTERNAL_DIR = os.path.join(PROJECT_ROOT, "external")
@@ -150,7 +150,7 @@ if os.path.exists(os.path.join(CQT_DIFF_DIR, ".git")):
 else:
     print(f"  Cloning CQT-Diff+ repository ke {CQT_DIFF_DIR}...")
     subprocess.run(
-        ["git", "clone", "https://github.com/eloimoliner/CQT_diff.git", CQT_DIFF_DIR],
+        ["git", "clone", "https://github.com/eloimoliner/CQTdiff.git", CQT_DIFF_DIR],
         check=False
     )
 
