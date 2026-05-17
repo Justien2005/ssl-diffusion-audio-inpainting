@@ -1177,6 +1177,19 @@ def _ensure_pyvisqol_model(pyvisqol_module, filename):
         except Exception as exc:
             last_exc = exc
 
+    import urllib.request
+
+    for url in [
+        f"https://raw.githubusercontent.com/google/visqol/master/model/{filename}",
+        f"https://raw.githubusercontent.com/google/visqol/main/model/{filename}",
+    ]:
+        try:
+            urllib.request.urlretrieve(url, model_path)
+            if os.path.getsize(model_path) > 0:
+                return model_path
+        except Exception as exc:
+            last_exc = exc
+
     raise FileNotFoundError(f"Gagal download model pyvisqol {filename}.") from last_exc
 
 

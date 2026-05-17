@@ -99,6 +99,7 @@ source env_instance.sh
 python - <<'PY'
 import os
 import shutil
+import urllib.request
 
 import pyvisqol
 print("pyvisqol:", getattr(pyvisqol, "__file__", pyvisqol))
@@ -118,8 +119,21 @@ if not os.path.isfile(model_path):
         except Exception:
             pass
     if downloaded is None:
+        for url in [
+            "https://raw.githubusercontent.com/google/visqol/master/model/libsvm_nu_svr_model.txt",
+            "https://raw.githubusercontent.com/google/visqol/main/model/libsvm_nu_svr_model.txt",
+        ]:
+            try:
+                urllib.request.urlretrieve(url, model_path)
+                if os.path.getsize(model_path) > 0:
+                    downloaded = model_path
+                    break
+            except Exception:
+                pass
+    if downloaded is None:
         raise FileNotFoundError("Tidak bisa download libsvm_nu_svr_model.txt untuk pyvisqol.")
-    shutil.copyfile(downloaded, model_path)
+    if downloaded != model_path:
+        shutil.copyfile(downloaded, model_path)
 
 config = visqol_config_pb2.VisqolConfig()
 config.audio.sample_rate = 48000
