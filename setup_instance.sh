@@ -37,7 +37,8 @@ echo "==> Creating Python environment: $VENV_DIR"
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip wheel
+python -m pip install "setuptools<82"
 
 echo "==> Installing CUDA PyTorch stack"
 pip uninstall -y torch torchvision torchaudio || true
@@ -114,9 +115,32 @@ echo "==> Compile check"
 source env_instance.sh
 python - <<'PY'
 import importlib
+import subprocess
+import sys
 
-visqol_lib_py = importlib.import_module("visqol.visqol_lib_py")
-visqol_config_pb2 = importlib.import_module("visqol.pb2.visqol_config_pb2")
+def import_first(candidates):
+    last_exc = None
+    for name in candidates:
+        try:
+            module = importlib.import_module(name)
+            print(f"import ok: {name}")
+            return module
+        except ImportError as exc:
+            print(f"import failed: {name}: {exc}")
+            last_exc = exc
+    print("\nInstalled visqol files:")
+    subprocess.run([sys.executable, "-m", "pip", "show", "-f", "visqol"], check=False)
+    raise last_exc
+
+visqol_lib_py = import_first([
+    "visqol.visqol_lib_py",
+    "python.visqol_lib_py",
+    "visqol_lib_py",
+])
+visqol_config_pb2 = import_first([
+    "visqol.pb2.visqol_config_pb2",
+    "visqol_config_pb2",
+])
 print("visqol:", visqol_lib_py.__file__)
 print("visqol config:", visqol_config_pb2.VisqolConfig().__class__.__name__)
 PY

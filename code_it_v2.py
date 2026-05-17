@@ -1186,12 +1186,24 @@ def _import_visqol_modules():
     """Import google/visqol modules across namespace-package layouts."""
     import importlib
 
-    try:
-        visqol_lib_py = importlib.import_module("visqol.visqol_lib_py")
-    except ImportError:
-        from visqol import visqol_lib_py
+    def import_first(candidates):
+        last_exc = None
+        for name in candidates:
+            try:
+                return importlib.import_module(name)
+            except ImportError as exc:
+                last_exc = exc
+        raise last_exc
 
-    visqol_config_pb2 = importlib.import_module("visqol.pb2.visqol_config_pb2")
+    visqol_lib_py = import_first([
+        "visqol.visqol_lib_py",
+        "python.visqol_lib_py",
+        "visqol_lib_py",
+    ])
+    visqol_config_pb2 = import_first([
+        "visqol.pb2.visqol_config_pb2",
+        "visqol_config_pb2",
+    ])
     return visqol_lib_py, visqol_config_pb2
 
 
