@@ -3112,6 +3112,9 @@ def build_audiomae_encoder(device):
         import types
         import math as _math
         import collections.abc as _container_abcs
+        import numpy as _np
+        if not hasattr(_np, "float"):
+            _np.float = float
         if "torch._six" not in sys.modules:
             _six = types.ModuleType("torch._six")
             _six.inf = _math.inf
