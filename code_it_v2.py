@@ -3126,6 +3126,26 @@ def build_audiomae_encoder(device):
         raise RuntimeError(
             f"AudioMAE harus memakai repo asli di {AUDIO_MAE_DIR}, tetapi import models_mae gagal."
         ) from exc
+    # AudioMAE was written for older timm where Block accepted qk_scale.
+    try:
+        from timm.models.vision_transformer import Block as _TimmBlock
+
+        class _AudioMAECompatBlock(_TimmBlock):
+            def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False,
+                         qk_scale=None, norm_layer=nn.LayerNorm, **kwargs):
+                kwargs.pop("qk_scale", None)
+                super().__init__(
+                    dim=dim,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=qkv_bias,
+                    norm_layer=norm_layer,
+                    **kwargs,
+                )
+
+        models_mae.Block = _AudioMAECompatBlock
+    except Exception as exc:
+        raise RuntimeError("Gagal memasang compatibility shim timm Block untuk AudioMAE.") from exc
 
     model = models_mae.mae_vit_base_patch16(
         norm_pix_loss=False,
