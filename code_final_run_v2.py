@@ -1,4 +1,4 @@
-# Generated from: code_it.ipynb
+﻿# Generated from: code_it.ipynb
 # Converted at: 2026-05-16T16:11:45.272Z
 # Next step (optional): refactor into modules & generate tests with RunCell
 # Quick start: pip install runcell
@@ -142,7 +142,8 @@ for pkg in packages:
 # Vast.ai/local: gunakan PROJECT_ROOT (default: current working directory), bukan path Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 EXTERNAL_DIR = os.path.join(PROJECT_ROOT, "external")
-CQT_DIFF_DIR = os.environ.get("CQT_DIFF_DIR", os.path.join(EXTERNAL_DIR, "CQT_diff"))
+CQT_DIFF_DIR = os.environ.get("CQT_DIFF_DIR", os.path.join(EXTERNAL_DIR, "CQTdiff"))
+AUDIO_MAE_DIR = os.environ.get("AUDIO_MAE_DIR", os.path.join(EXTERNAL_DIR, "AudioMAE"))
 os.makedirs(EXTERNAL_DIR, exist_ok=True)
 
 if os.path.exists(os.path.join(CQT_DIFF_DIR, ".git")):
@@ -157,11 +158,12 @@ else:
 # Tambahkan repo ke Python path agar bisa di-import
 if CQT_DIFF_DIR not in sys.path:
     sys.path.insert(0, CQT_DIFF_DIR)
+if os.path.isdir(AUDIO_MAE_DIR) and AUDIO_MAE_DIR not in sys.path:
+    sys.path.insert(0, AUDIO_MAE_DIR)
 
-print("\n✅ Semua dependencies berhasil diinstall!")
-print("\n💡 Catatan: MAID belum punya repo publik resmi.")
-print("   Pada Cell 9 & 11, implementasi MAID menggunakan versi replika")
-print("   berdasarkan deskripsi di paper (gap-aware conditional diffusion).")
+print("\nDependencies siap.")
+print("\nMode final: semua komponen model harus memakai implementasi asli.")
+print("   Proxy/replika dinonaktifkan; pipeline akan berhenti jika model asli belum dikonfigurasi.")
 
 # ---
 # ## CELL 2 — Mount Google Drive & Setup Folder
@@ -178,7 +180,7 @@ print("   berdasarkan deskripsi di paper (gap-aware conditional diffusion).")
 import os
 
 # --- PARAMETER -----------------------------------------------
-PIPELINE_STAGE_NAME = "code_v3_instance_test"  # Stage override: isolasi output/checkpoint untuk notebook ini.
+PIPELINE_STAGE_NAME = "code_v3_final_run"  # Stage override: isolasi output/checkpoint untuk notebook ini.
 IS_LOCAL = True   # Vast.ai/local default. Ganti ke False hanya jika menggunakan Google Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 BASE_LOCAL_ROOT = os.environ.get("MUSIC_INPAINTING_ROOT", os.path.join(PROJECT_ROOT, "music_inpainting"))
@@ -211,6 +213,40 @@ PATHS = {
     "logs":         os.path.join(DATA_ROOT, "logs"),
     "plots":        os.path.join(DATA_ROOT, "plots"),
 }
+
+# Final thesis guardrail: do not use local proxy/reimplementation models.
+# CQT-Diff+ and MAID need thin adapter modules because their official code does
+# not expose the exact FiLM-training interface used by this notebook.
+OFFICIAL_MODELS_ONLY = True
+OFFICIAL_CQTDIFF_ADAPTER = os.environ.get("OFFICIAL_CQTDIFF_ADAPTER", "official_cqtdiff_adapter")
+MAID_ADAPTER = os.environ.get("MAID_ADAPTER", "official_maid_adapter")
+
+
+def validate_official_model_configuration():
+    if not OFFICIAL_MODELS_ONLY:
+        raise RuntimeError("Final pipeline harus berjalan dengan OFFICIAL_MODELS_ONLY=True.")
+
+    import importlib.util
+
+    required_adapters = {
+        "CQT-Diff+ original": OFFICIAL_CQTDIFF_ADAPTER,
+        "MAID proxy": MAID_ADAPTER,
+    }
+    missing = [
+        f"{label}: module '{module_name}'"
+        for label, module_name in required_adapters.items()
+        if importlib.util.find_spec(module_name) is None
+    ]
+    if missing:
+        raise RuntimeError(
+            "Final pipeline disetel official-only, tetapi adapter model asli belum tersedia:\n"
+            + "\n".join(f"  - {item}" for item in missing)
+            + "\n\nBuat module adapter tersebut di PYTHONPATH atau set env var "
+              "OFFICIAL_CQTDIFF_ADAPTER/MAID_ADAPTER ke module adapter yang benar."
+        )
+
+
+validate_official_model_configuration()
 
 for name, path in PATHS.items():
     os.makedirs(path, exist_ok=True)
@@ -395,7 +431,7 @@ import time
 # ============================================================
 
 # Set True jika preprocessing sudah pernah dijalankan
-SKIP_IF_EXISTS = True
+SKIP_IF_EXISTS = False
 
 # Seed tetap untuk semua sampling dataset agar eksperimen reproducible
 DATASET_RANDOM_SEED = 42
@@ -411,8 +447,7 @@ SEGMENT_SAMPLES = int(TARGET_SR * SEGMENT_DURATION)  # 176400 samples
 GAP_DURATIONS_MS = [100, 300, 500, 750, 1200, 1700]
 
 # Persentase dataset yang digunakan
-# Stage override: instance test keeps the current 3% dataset fraction.
-DATASET_FRACTION = 0.03
+DATASET_FRACTION = 0.5
 
 # Jumlah segmen maksimal per lagu
 MAX_SEGMENTS_PER_FILE = 5
@@ -2148,9 +2183,8 @@ print(f"   AUTO_NUM_WORKERS: {AUTO_NUM_WORKERS}")
 # Training untuk pipeline hybrid SSL + Decoder.
 #
 # PERBAIKAN UTAMA dari versi sebelumnya:
-# - Ganti epsilon prediction (DDPM) -> reconstruction loss
-#   karena proxy model terlalu simpel untuk proper DDPM
-#   (butuh UNet + timestep embedding + iterative sampling)
+# - Training loop tetap memakai objective rekonstruksi yang diharapkan
+#   disediakan oleh adapter decoder asli.
 # - Training dan inference sekarang ALIGNED:
 #   training prediksi STFT magnitude clean, inference juga
 # - Loss dihitung pada gap region only (spectral domain)
@@ -2749,13 +2783,13 @@ print("             train_model, train_baseline_model, validate_model")
 # ============================================================
 # Helper bersama untuk:
 # - builder encoder batch-capable (CLAP, AudioMAE)
-# - builder decoder shared (CQT-Diff+ proxy, MAID replica)
+# - builder decoder via adapters (CQT-Diff+ original, MAID proxy)
 # - save/load checkpoint hybrid
 # - trainer minimal-kompatibel untuk MAID
 # - helper evaluasi hybrid yang selalu load checkpoint terlatih
 #
 # PERBAIKAN UTAMA:
-# - SharedCQTDiffProxyModel sekarang temporal-aware (per-frame STFT)
+# - proxy/replika decoder dinonaktifkan untuk final pipeline
 # - Training & inference aligned (keduanya reconstruction-based)
 # - Mask-aware: model tahu lokasi dan ukuran gap
 # ============================================================
@@ -2923,326 +2957,6 @@ def torch_audio_to_mel_batch(audio_batch, sr: int = TARGET_SR, n_mels: int = 128
     return mel_db, mel_norm
 
 
-class SharedCQTDiffProxyModel(nn.Module):
-    """
-    Proxy CQT-Diff+ dengan arsitektur temporal (STFT-based).
-
-    PERBAIKAN dari versi sebelumnya:
-    1. Temporal-aware: process per-frame STFT, bukan mean pool
-    2. Mask-aware: model tahu dimana gap-nya lewat mask channel
-    3. Training-inference aligned: keduanya prediksi STFT magnitude
-    4. Proper reconstruction via iSTFT (bukan MLP -> full waveform)
-
-    Arsitektur:
-    - Encoder: STFT mag + mask -> per-frame features (B, T, feature_dim)
-    - Temporal: Transformer buat konteks temporal antar frame
-    - Decoder: features -> predicted STFT magnitude (B, T, F)
-    - Inpaint: predicted mag + phase dari input -> iSTFT -> replace gap
-    """
-
-    def __init__(self, n_fft=2048, hop_length=512, feature_dim=256):
-        super().__init__()
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-        self.feature_dim = feature_dim
-        self.freq_bins = n_fft // 2 + 1  # 1025
-
-        # Encoder: STFT magnitude + mask indicator -> feature per frame
-        self.encoder = nn.Sequential(
-            nn.Linear(self.freq_bins + 1, 512),  # +1 buat mask channel
-            nn.SiLU(),
-            nn.Linear(512, feature_dim),
-            nn.SiLU(),
-        )
-
-        # Temporal modeling buat konteks antar frame (penting buat gap)
-        self.temporal = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=feature_dim, nhead=8,
-                dim_feedforward=512, batch_first=True, dropout=0.1
-            ),
-            num_layers=4,
-        )
-
-        # Decoder: features -> predicted STFT magnitude
-        self.mag_decoder = nn.Sequential(
-            nn.Linear(feature_dim, 512),
-            nn.SiLU(),
-            nn.Linear(512, self.freq_bins),
-            nn.ReLU(),  # magnitude selalu non-negative
-        )
-
-    def _sample_to_frame_mask(self, mask, n_frames):
-        """Konversi sample-level boolean mask -> frame-level float mask dengan avg_pool1d."""
-        pooled = F.avg_pool1d(
-            mask.float().unsqueeze(1),
-            kernel_size=self.hop_length,
-            stride=self.hop_length,
-            ceil_mode=True,
-        ).squeeze(1)
-        if pooled.shape[1] < n_frames:
-            pooled = F.pad(pooled, (0, n_frames - pooled.shape[1]))
-        elif pooled.shape[1] > n_frames:
-            pooled = pooled[:, :n_frames]
-        return pooled  # (B, T) values in [0, 1]
-
-    def get_features(self, x: torch.Tensor, mask: torch.Tensor = None):
-        """
-        Extract temporal features dari audio.
-
-        Args:
-            x: audio input (B, N) atau (B, 1, N)
-            mask: boolean mask (B, N), True = gap region
-        Returns:
-            features: (B, T, feature_dim) — sequence of per-frame features
-        """
-        x_in = x.squeeze(1) if x.dim() == 3 else x
-
-        # STFT magnitude
-        window = _get_hann_window(self.n_fft, x_in.device)
-        spec = torch.stft(
-            x_in, n_fft=self.n_fft, hop_length=self.hop_length,
-            window=window,
-            return_complex=True
-        )
-        mag = spec.abs().permute(0, 2, 1)  # (B, T, F)
-        n_frames = mag.shape[1]
-
-        # Tambah mask channel biar model tahu posisi gap
-        if mask is not None:
-            frame_mask = self._sample_to_frame_mask(mask, n_frames)
-            mag_with_mask = torch.cat([mag, frame_mask.unsqueeze(-1)], dim=-1)
-        else:
-            zeros = torch.zeros(mag.shape[0], n_frames, 1, device=mag.device)
-            mag_with_mask = torch.cat([mag, zeros], dim=-1)
-
-        # Per-frame encoding
-        features = self.encoder(mag_with_mask)  # (B, T, feature_dim)
-
-        # Temporal context
-        features = self.temporal(features)  # (B, T, feature_dim)
-        return features
-
-    def decode_features(self, features: torch.Tensor):
-        """Decode conditioned features ke STFT magnitude prediction."""
-        return self.mag_decoder(features)  # (B, T, F)
-
-    def forward(self, x: torch.Tensor, mask: torch.Tensor = None, conditioning=None):
-        """Full forward pass: audio -> predicted STFT magnitude."""
-        features = self.get_features(x, mask)
-        if conditioning is not None:
-            features = features + conditioning.unsqueeze(1)
-        return self.decode_features(features)
-
-    def inpaint(self, masked_audio: torch.Tensor, mask: torch.Tensor, conditioning=None):
-        """
-        Inpainting: prediksi STFT magnitude gap region, lalu iSTFT.
-
-        Args:
-            masked_audio: (B, N) atau (1, N) audio dengan gap di-zero-kan
-            mask: (B, N) boolean mask, True = gap region
-            conditioning: (B, feature_dim) dari FiLM, atau None buat baseline
-        Returns:
-            numpy array reconstructed audio
-        """
-        if masked_audio.dim() == 1:
-            masked_audio = masked_audio.unsqueeze(0)
-        if mask.dim() == 1:
-            mask = mask.unsqueeze(0)
-
-        x_in = masked_audio.squeeze(1) if masked_audio.dim() == 3 else masked_audio
-
-        # Prediksi STFT magnitude
-        features = self.get_features(x_in, mask)
-        if conditioning is not None:
-            # conditioning bisa (B, feature_dim) atau (B, T, feature_dim)
-            if conditioning.dim() == 2:
-                conditioning = conditioning.unsqueeze(1)
-            features = features + conditioning
-        pred_mag = self.decode_features(features)  # (B, T, F)
-        pred_mag = pred_mag.permute(0, 2, 1)  # (B, F, T)
-
-        # Phase dari input audio (buat rekonstruksi)
-        window = _get_hann_window(self.n_fft, x_in.device)
-        input_spec = torch.stft(
-            x_in, n_fft=self.n_fft, hop_length=self.hop_length,
-            window=window,
-            return_complex=True
-        )
-        input_phase = torch.angle(input_spec)
-
-        # Bikin complex STFT dari predicted magnitude + input phase
-        recon_spec = pred_mag * torch.exp(1j * input_phase)
-
-        # iSTFT -> waveform
-        reconstructed = torch.istft(
-            recon_spec, n_fft=self.n_fft, hop_length=self.hop_length,
-            window=window,
-            length=x_in.shape[-1]
-        )
-
-        # Hanya replace gap region
-        output = x_in.clone()
-        output[mask.bool()] = reconstructed[mask.bool()]
-
-        if output.shape[0] == 1:
-            return output[0].detach().cpu().numpy()
-        return output.detach().cpu().numpy()
-
-
-class AudioMAEProxy(nn.Module):
-    def __init__(self, output_dim=768):
-        super().__init__()
-        self.output_dim = output_dim
-        self.patch_embed = nn.Linear(128, 256)
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=256, nhead=8, batch_first=True),
-            num_layers=4,
-        )
-        self.proj = nn.Linear(256, output_dim)
-
-    def forward(self, x):
-        x = x.permute(0, 2, 1)
-        x = self.patch_embed(x)
-        x = self.transformer(x)
-        x = x.mean(dim=1)
-        return self.proj(x)
-
-
-class SharedMAIDDecoder(nn.Module):
-    """
-    MAID replica bersama untuk training dan evaluation hybrid.
-
-    Training menggunakan loss rekonstruksi pada domain mel untuk menjaga scope tetap
-    selaras dengan replica yang sudah ada, tanpa memaksa refactor penuh ke DDPM.
-    """
-
-    def __init__(self, n_mels: int = 128, feature_dim: int = 512, n_fft: int = 2048, hop_length: int = 512):
-        super().__init__()
-        self.n_mels = n_mels
-        self.feature_dim = feature_dim
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-
-        self.encoder_blocks = nn.ModuleList([
-            nn.Sequential(nn.Linear(n_mels, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, feature_dim), nn.SiLU()),
-        ])
-
-        self.decoder_blocks = nn.ModuleList([
-            nn.Sequential(nn.Linear(feature_dim, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, n_mels)),
-        ])
-
-        self.feature_pool = nn.Sequential(
-            nn.Linear(n_mels, feature_dim),
-            nn.SiLU(),
-        )
-
-    @property
-    def device(self):
-        return next(self.parameters()).device
-
-    def audio_to_mel_batch(self, audio_batch, sr: int = TARGET_SR):
-        return torch_audio_to_mel_batch(
-            audio_batch,
-            sr=sr,
-            n_mels=self.n_mels,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            device=self.device,
-        )
-
-    def mask_to_frame_mask(self, mask_batch, frame_count: int):
-        if isinstance(mask_batch, torch.Tensor):
-            mask_t = mask_batch.to(self.device, non_blocking=True).bool()
-        else:
-            mask_t = torch.as_tensor(mask_batch, dtype=torch.bool, device=self.device)
-        if mask_t.dim() == 1:
-            mask_t = mask_t.unsqueeze(0)
-
-        pooled = F.max_pool1d(
-            mask_t.float().unsqueeze(1),
-            kernel_size=self.hop_length,
-            stride=self.hop_length,
-            ceil_mode=True,
-        ).squeeze(1)
-        if pooled.shape[1] < frame_count:
-            pooled = F.pad(pooled, (0, frame_count - pooled.shape[1]))
-        elif pooled.shape[1] > frame_count:
-            pooled = pooled[:, :frame_count]
-        return pooled.bool()
-
-    def get_features(self, x: torch.Tensor):
-        _, mel_norm = self.audio_to_mel_batch(x)
-        pooled = mel_norm.mean(dim=-1)
-        return self.feature_pool(pooled)
-
-    def predict_mel_norm(self, masked_audio: torch.Tensor, conditioning=None):
-        _, mel_norm = self.audio_to_mel_batch(masked_audio)
-        x = mel_norm.permute(0, 2, 1)
-
-        for block in self.encoder_blocks:
-            x = block(x)
-
-        if conditioning is not None:
-            x = x + conditioning.unsqueeze(1)
-
-        for block in self.decoder_blocks:
-            x = block(x)
-
-        return x
-
-    def mel_db_to_audio_tensor(self, mel_db_pred: torch.Tensor, sr: int = TARGET_SR, target_len: int = None):
-        """Inverse mel reconstruction with TorchAudio modules kept on the decoder device."""
-        if mel_db_pred.dim() == 2:
-            mel_db_pred = mel_db_pred.unsqueeze(0)
-
-        with torch.autocast(device_type="cuda" if mel_db_pred.device.type == "cuda" else "cpu", enabled=False):
-            mel_power = torch.pow(10.0, mel_db_pred.float() / 10.0).clamp_min(1e-10)
-            inverse_mel = _get_inverse_mel_scale(sr, self.n_fft, self.n_mels, mel_power.device)
-            griffinlim = _get_griffinlim(self.n_fft, self.hop_length, mel_power.device)
-            linear_power = inverse_mel(mel_power).clamp_min(1e-10)
-            reconstructed = griffinlim(linear_power.sqrt())
-
-        if target_len is not None:
-            if reconstructed.shape[-1] > target_len:
-                reconstructed = reconstructed[..., :target_len]
-            elif reconstructed.shape[-1] < target_len:
-                reconstructed = F.pad(reconstructed, (0, target_len - reconstructed.shape[-1]))
-        return reconstructed
-
-    def mel_db_to_audio(self, mel_db_pred: np.ndarray, sr: int = TARGET_SR):
-        mel_tensor = torch.as_tensor(mel_db_pred, dtype=torch.float32, device=self.device)
-        audio = self.mel_db_to_audio_tensor(mel_tensor, sr=sr)
-        return audio.squeeze(0).detach().cpu().numpy()
-
-    def inpaint(self, masked_audio: torch.Tensor, mask: torch.Tensor, conditioning=None, n_steps: int = 50):
-        if masked_audio.dim() == 1:
-            masked_audio = masked_audio.unsqueeze(0)
-        if mask.dim() == 1:
-            mask = mask.unsqueeze(0)
-        masked_audio = masked_audio.to(self.device, dtype=torch.float32, non_blocking=True)
-        mask = mask.to(self.device, dtype=torch.bool, non_blocking=True)
-
-        base_mel_db, _ = self.audio_to_mel_batch(masked_audio)
-        pred_mel_norm = self.predict_mel_norm(masked_audio, conditioning=conditioning)
-        pred_mel_db = pred_mel_norm.permute(0, 2, 1) * 40.0 - 40.0
-        gap_frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[1]).unsqueeze(1)
-
-        output_mel_db = torch.where(gap_frame_mask, pred_mel_db, base_mel_db)
-        reconstructed = self.mel_db_to_audio_tensor(
-            output_mel_db,
-            sr=TARGET_SR,
-            target_len=masked_audio.shape[-1],
-        )
-
-        output = torch.where(mask.bool(), reconstructed, masked_audio)
-        if output.shape[0] == 1:
-            return output[0].detach().cpu().numpy()
-        return output.detach().cpu().numpy()
 
 
 
@@ -3270,18 +2984,83 @@ def build_film_layer(model_name: str, device):
     ).to(device)
 
 
+def _load_official_adapter(module_name: str, builder_name: str, model_label: str):
+    """Load an official-model adapter and fail loudly if it is not configured."""
+    import importlib
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        raise RuntimeError(
+            f"{model_label} harus memakai model asli, tetapi adapter '{module_name}' "
+            f"belum tersedia/importable. Buat module adapter tersebut atau set env var "
+            f"yang sesuai sebelum menjalankan pipeline final."
+        ) from exc
+
+    builder = getattr(module, builder_name, None)
+    if not callable(builder):
+        raise RuntimeError(
+            f"Adapter '{module_name}' tidak punya fungsi callable '{builder_name}' "
+            f"untuk membangun {model_label} asli."
+        )
+    return builder
+
+
+def _validate_decoder_interface(decoder, required_methods, model_label: str):
+    missing = [name for name in required_methods if not hasattr(decoder, name)]
+    if missing:
+        raise TypeError(
+            f"{model_label} adapter tidak kompatibel dengan training/evaluasi pipeline ini. "
+            f"Method yang belum ada: {missing}"
+        )
+    return decoder
+
+
 
 def build_hybrid_cqtdiff_decoder(device):
-    decoder = SharedCQTDiffProxyModel().to(device)
+    builder = _load_official_adapter(
+        OFFICIAL_CQTDIFF_ADAPTER,
+        "build_cqtdiff_decoder",
+        "CQT-Diff+ original",
+    )
+    decoder = builder(
+        device=device,
+        target_sr=TARGET_SR,
+        segment_samples=SEGMENT_SAMPLES,
+        gap_durations_ms=GAP_DURATIONS_MS,
+        cqt_diff_dir=CQT_DIFF_DIR,
+    )
+    decoder = _validate_decoder_interface(
+        decoder,
+        ["get_features", "decode_features", "inpaint", "parameters", "state_dict", "load_state_dict", "train", "eval"],
+        "CQT-Diff+ original",
+    )
     decoder.eval()
-    print("ℹ️ Hybrid CQT-Diff+ menggunakan shared proxy decoder untuk konsistensi training/evaluation.")
+    print("CQT-Diff+ original loaded via official adapter.")
     return decoder
 
 
 
 def build_maid_decoder(device):
-    decoder = SharedMAIDDecoder().to(device)
+    builder = _load_official_adapter(
+        MAID_ADAPTER,
+        "build_maid_decoder",
+        "MAID proxy",
+    )
+    decoder = builder(
+        device=device,
+        target_sr=TARGET_SR,
+        segment_samples=SEGMENT_SAMPLES,
+        gap_durations_ms=GAP_DURATIONS_MS,
+    )
+    decoder = _validate_decoder_interface(
+        decoder,
+        ["get_features", "predict_mel_norm", "audio_to_mel_batch", "mask_to_frame_mask", "inpaint",
+         "parameters", "state_dict", "load_state_dict", "train", "eval"],
+        "MAID proxy",
+    )
     decoder.eval()
+    print("MAID proxy loaded via adapter.")
     return decoder
 
 
@@ -3324,50 +3103,93 @@ def build_clap_encoder(device):
 
 
 def build_audiomae_encoder(device):
-    torch_dtype = torch.float16
+    if not os.path.isdir(AUDIO_MAE_DIR):
+        raise RuntimeError(f"Repo AudioMAE tidak ditemukan: {AUDIO_MAE_DIR}")
+    if AUDIO_MAE_DIR not in sys.path:
+        sys.path.insert(0, AUDIO_MAE_DIR)
 
     try:
-        from transformers import AutoFeatureExtractor, AutoModel
-
-        model_name = "facebook/audiomae-base-audioset"
-        processor = AutoFeatureExtractor.from_pretrained(model_name)
-        model = AutoModel.from_pretrained(model_name, torch_dtype=torch_dtype).to(device)
-        model.eval()
-        use_real = True
-        print("✅ AudioMAE dari HuggingFace berhasil diload.")
+        import models_mae
     except Exception as exc:
-        processor = None
-        model = AudioMAEProxy().to(device)
-        model.eval()
-        use_real = False
-        print(f"⚠️ AudioMAE real tidak tersedia, memakai proxy ({exc})")
+        raise RuntimeError(
+            f"AudioMAE harus memakai repo asli di {AUDIO_MAE_DIR}, tetapi import models_mae gagal."
+        ) from exc
+
+    model = models_mae.mae_vit_base_patch16(
+        norm_pix_loss=False,
+        in_chans=1,
+        audio_exp=True,
+        img_size=(1024, 128),
+        alpha=0.0,
+        mode=0,
+        use_custom_patch=False,
+        split_pos=False,
+        pos_trainable=False,
+        use_nce=False,
+        decoder_mode=0,
+        mask_2d=False,
+        mask_t_prob=0.6,
+        mask_f_prob=0.5,
+        no_shift=False,
+    ).to(device)
+
+    ckpt_candidates = [
+        os.environ.get("AUDIOMAE_CHECKPOINT"),
+        os.path.join(AUDIO_MAE_DIR, "ckpt", "pretrained.pth"),
+        os.path.join(AUDIO_MAE_DIR, "ckpt", "finetuned.pth"),
+        os.path.join(AUDIO_MAE_DIR, "pretrained.pth"),
+        os.path.join(AUDIO_MAE_DIR, "finetuned.pth"),
+    ]
+    ckpt_path = next((p for p in ckpt_candidates if p and os.path.exists(p)), None)
+    if ckpt_path is None:
+        raise FileNotFoundError(
+            "Checkpoint AudioMAE asli belum ditemukan. Letakkan checkpoint di "
+            f"{os.path.join(AUDIO_MAE_DIR, 'ckpt', 'pretrained.pth')} atau set AUDIOMAE_CHECKPOINT."
+        )
+
+    payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state = payload.get("model", payload) if isinstance(payload, dict) else payload
+    state = {str(k).replace("module.", "", 1): v for k, v in state.items()}
+    msg = model.load_state_dict(state, strict=False)
+    model.eval()
+    print(f"AudioMAE asli dari repo berhasil diload: {ckpt_path}")
+    print(f"AudioMAE load_state_dict: {msg}")
+
+    fbank_mean = -4.2677393
+    fbank_std = 4.5689974
+
+    def _audio_to_audiomae_input(audio_list, sr):
+        fbanks = []
+        for audio in audio_list:
+            wav = torch.as_tensor(audio, dtype=torch.float32).view(1, -1).cpu()
+            if sr != 16000:
+                wav = torchaudio.functional.resample(wav, sr, 16000)
+            wav = wav - wav.mean()
+            fbank = torchaudio.compliance.kaldi.fbank(
+                wav,
+                htk_compat=True,
+                sample_frequency=16000,
+                use_energy=False,
+                window_type="hanning",
+                num_mel_bins=128,
+                dither=0.0,
+                frame_shift=10,
+            )
+            if fbank.shape[0] < 1024:
+                fbank = F.pad(fbank, (0, 0, 0, 1024 - fbank.shape[0]))
+            elif fbank.shape[0] > 1024:
+                fbank = fbank[:1024, :]
+            fbank = (fbank - fbank_mean) / (fbank_std * 2.0)
+            fbanks.append(fbank)
+        return torch.stack(fbanks, dim=0).unsqueeze(1).to(device, non_blocking=True)
 
     def encode(audio_batch, sr: int = TARGET_SR):
         audio_list = ensure_audio_list(audio_batch)
 
         with torch.inference_mode():
-            if use_real:
-                inputs = processor(audio_list, sampling_rate=sr, return_tensors="pt", padding=True)
-                inputs = {
-                    key: value.to(device=device, dtype=torch_dtype if value.is_floating_point() else value.dtype)
-                    for key, value in inputs.items()
-                }
-                outputs = model(**inputs)
-                if hasattr(outputs, "last_hidden_state"):
-                    return outputs.last_hidden_state[:, 0, :].float()
-                if hasattr(outputs, "pooler_output"):
-                    return outputs.pooler_output.float()
-                raise TypeError(f"Output AudioMAE tidak dikenali: {type(outputs)}")
-
-            _, mel_tensor = torch_audio_to_mel_batch(
-                audio_batch if isinstance(audio_batch, torch.Tensor) else audio_list,
-                sr=sr,
-                n_mels=128,
-                n_fft=2048,
-                hop_length=512,
-                device=device,
-            )
-            return model(mel_tensor).float()
+            inputs = _audio_to_audiomae_input(audio_list, sr)
+            embeddings = model.forward_encoder_no_mask(inputs)
+            return embeddings[:, 0, :].float()
 
     return model, encode
 
@@ -3573,8 +3395,8 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     """
     Evaluasi hybrid model (encoder + FiLM + decoder).
 
-    PERBAIKAN: sekarang pass mask ke get_features() untuk CQT-Diff+ proxy,
-    dan FiLM conditioning di-inject dengan benar ke sequence features.
+    Evaluasi hybrid memakai decoder asli melalui adapter resmi.
+    FiLM conditioning di-inject ke fitur decoder sesuai interface adapter.
     """
     evaluation_start = time.perf_counter()
     model_name = model_name_from_label(model_label)
@@ -3599,11 +3421,11 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                 mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
                 mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
-                # Cek apakah decoder punya mask-aware get_features (CQT-Diff+ proxy baru)
+                # Cek apakah decoder punya mask-aware get_features.
                 import inspect
                 sig = inspect.signature(decoder.get_features)
                 if 'mask' in sig.parameters:
-                    # CQT-Diff+ proxy baru: get_features(x, mask) -> (B, T, D)
+                    # CQT-Diff+: get_features(x, mask) -> (B, T, D)
                     decoder_features = decoder.get_features(masked_tensor, mask_tensor)
                     conditioned_features = film_layer(encoder_latent.float(), decoder_features)
                 else:
@@ -3674,15 +3496,14 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
 
 
 print("✅ Shared hybrid training helpers berhasil didefinisikan!")
-print("   Tersedia: SharedCQTDiffProxyModel (temporal), SharedMAIDDecoder,")
-print("   builder encoder/decoder, checkpoint helpers, trainer MAID,")
+print("   Tersedia: builder encoder asli, adapter decoder asli, checkpoint helpers, trainer MAID,")
 print("   run_hybrid_inpainting_evaluation, run_baseline_inpainting_evaluation")
 
 
 # ---
 # ## CELL 7 — BASELINE: CQT-Diff+ Standalone (Trained)
 # 
-# Ini adalah **baseline** — CQT-Diff+ proxy **di-train tanpa encoder SSL dan tanpa FiLM**.
+# Ini adalah **baseline** — CQT-Diff+ original **di-train tanpa encoder SSL dan tanpa FiLM**.
 # 
 # **Perubahan penting dari versi sebelumnya:**
 # - Baseline sekarang **juga di-train** (reconstruction loss di STFT domain)
@@ -3699,13 +3520,13 @@ print("   run_hybrid_inpainting_evaluation, run_baseline_inpainting_evaluation")
 # ============================================================
 # CELL 7: BASELINE — CQT-Diff+ STANDALONE (TRAINED)
 # ============================================================
-# Baseline = CQT-Diff+ proxy TRAINED tanpa encoder SSL dan tanpa FiLM.
+# Baseline = CQT-Diff+ original TRAINED tanpa encoder SSL dan tanpa FiLM.
 #
 # PERBAIKAN dari versi sebelumnya:
 # - Baseline sekarang JUGA DI-TRAIN (tanpa encoder conditioning)
 # - Perbandingan jadi FAIR: bedanya hybrid vs baseline cuma ada/tidaknya
 #   SSL encoder conditioning, bukan trained vs untrained
-# - Pakai arsitektur SharedCQTDiffProxyModel yang sama dengan hybrid
+# - Pakai decoder CQT-Diff+ original yang sama dengan hybrid
 # - Training pakai reconstruction loss (bukan random weights)
 #
 # Alur:
@@ -3722,7 +3543,7 @@ MODEL_NAME = "baseline_cqtdiff"
 FORCE_RETRAIN = True    # <-- True karena arsitektur model berubah total!
 FORCE_REEVAL = True     # <-- True buat hapus hasil lama dan re-evaluasi
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 # Stage override: instance memory/throughput test uses batch size 8.
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
@@ -3779,7 +3600,7 @@ else:
         print("   bedanya cuma TANPA SSL encoder conditioning.\n")
 
         loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
-        baseline_model = SharedCQTDiffProxyModel().to(device)
+        baseline_model = build_hybrid_cqtdiff_decoder(device)
         print_gpu_usage("Sebelum training baseline")
 
         train_baseline_model(
@@ -3801,7 +3622,7 @@ else:
     # EVALUASI BASELINE
     # ============================================================
     print("\n📥 Loading trained baseline untuk evaluasi...")
-    baseline_model = SharedCQTDiffProxyModel().to(device)
+    baseline_model = build_hybrid_cqtdiff_decoder(device)
     load_baseline_checkpoint(baseline_model, device)
     baseline_model.eval()
     print_gpu_usage("Setelah load baseline")
@@ -3849,7 +3670,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -3974,7 +3795,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4099,7 +3920,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4223,8 +4044,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
-# Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")

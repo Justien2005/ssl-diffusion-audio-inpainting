@@ -178,7 +178,7 @@ print("   berdasarkan deskripsi di paper (gap-aware conditional diffusion).")
 import os
 
 # --- PARAMETER -----------------------------------------------
-PIPELINE_STAGE_NAME = "code_v3_instance_test"  # Stage override: isolasi output/checkpoint untuk notebook ini.
+PIPELINE_STAGE_NAME = "code_v3_final_run"  # Stage override: isolasi output/checkpoint untuk notebook ini.
 IS_LOCAL = True   # Vast.ai/local default. Ganti ke False hanya jika menggunakan Google Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 BASE_LOCAL_ROOT = os.environ.get("MUSIC_INPAINTING_ROOT", os.path.join(PROJECT_ROOT, "music_inpainting"))
@@ -395,7 +395,7 @@ import time
 # ============================================================
 
 # Set True jika preprocessing sudah pernah dijalankan
-SKIP_IF_EXISTS = True
+SKIP_IF_EXISTS = False
 
 # Seed tetap untuk semua sampling dataset agar eksperimen reproducible
 DATASET_RANDOM_SEED = 42
@@ -411,8 +411,7 @@ SEGMENT_SAMPLES = int(TARGET_SR * SEGMENT_DURATION)  # 176400 samples
 GAP_DURATIONS_MS = [100, 300, 500, 750, 1200, 1700]
 
 # Persentase dataset yang digunakan
-# Stage override: instance test keeps the current 3% dataset fraction.
-DATASET_FRACTION = 0.03
+DATASET_FRACTION = 0.5
 
 # Jumlah segmen maksimal per lagu
 MAX_SEGMENTS_PER_FILE = 5
@@ -3722,7 +3721,7 @@ MODEL_NAME = "baseline_cqtdiff"
 FORCE_RETRAIN = True    # <-- True karena arsitektur model berubah total!
 FORCE_REEVAL = True     # <-- True buat hapus hasil lama dan re-evaluasi
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 # Stage override: instance memory/throughput test uses batch size 8.
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
@@ -3849,7 +3848,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -3974,7 +3973,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4099,7 +4098,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4223,8 +4222,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
-# Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")

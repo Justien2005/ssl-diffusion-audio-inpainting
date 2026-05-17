@@ -12,10 +12,13 @@ matplotlib
 
 # Model stack
 torch
+torchaudio
 transformers
 accelerate
 einops
 timm
+omegaconf
+hydra-core
 
 # Evaluation
 # visqol-lib-py

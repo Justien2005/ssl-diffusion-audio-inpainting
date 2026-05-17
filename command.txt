@@ -18,6 +18,7 @@ source venv/bin/activate
 pip install --upgrade pip
 
 # comment torch, torchvision, torchaudio
+pip uninstall torch torchvision torchaudio
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 pip install -r requirements.txt
