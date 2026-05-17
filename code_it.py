@@ -462,8 +462,9 @@ def download_musicnet():
     os.makedirs(audio_dir, exist_ok=True)
     MUSICNET_URL = "https://zenodo.org/record/5120004/files/musicnet.tar.gz"
     tar_path = os.path.join(dataset_dir, "musicnet.tar.gz")
+    
 
-    if os.path.exists(tar_path):
+    if os.path.exists(tar_path) and os.path.getsize(tar_path) > 1e10:
         print(f"Menggunakan archive MusicNet yang sudah ada: {tar_path}")
     else:
         print("?? Downloading MusicNet audio files...")
@@ -2166,8 +2167,9 @@ import time
 
 def compute_stft_target(clean_audio, n_fft=2048, hop_length=512):
     """Hitung STFT magnitude target dari clean audio."""
+    window = _get_hann_window(n_fft, clean_audio.device)
     spec = torch.stft(
-        clean_audio, n_fft=n_fft, hop_length=hop_length,
+        clean_audio, n_fft=n_fft, hop_length=hop_length, window=window,
         return_complex=True
     )
     return spec.abs()  # (B, F, T)
@@ -2762,6 +2764,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import librosa
+import torchaudio
 import time
 
 HYBRID_CKPT_SUFFIX = "_best.pt"
@@ -2809,6 +2812,8 @@ def load_baseline_checkpoint(decoder: nn.Module, device):
 
 _MEL_FILTER_CACHE = {}
 _WINDOW_CACHE = {}
+_INVERSE_MEL_CACHE = {}
+_GRIFFINLIM_CACHE = {}
 
 
 def _get_hann_window(n_fft, device):
@@ -2824,10 +2829,59 @@ def _get_mel_filter(sr, n_fft, n_mels, device):
     key = (sr, n_fft, n_mels, str(device))
     mel = _MEL_FILTER_CACHE.get(key)
     if mel is None or mel.device != device:
-        mel_np = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels).astype(np.float32)
-        mel = torch.from_numpy(mel_np).to(device)
+        # TorchAudio returns (freq, mel); transpose once and cache on-device.
+        mel = torchaudio.functional.melscale_fbanks(
+            n_freqs=n_fft // 2 + 1,
+            f_min=0.0,
+            f_max=sr / 2,
+            n_mels=n_mels,
+            sample_rate=sr,
+            norm="slaney",
+            mel_scale="slaney",
+        ).to(device=device, dtype=torch.float32).transpose(0, 1).contiguous()
         _MEL_FILTER_CACHE[key] = mel
     return mel
+
+
+def _module_device(module, fallback):
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        try:
+            return next(module.buffers()).device
+        except StopIteration:
+            return fallback
+
+
+def _get_inverse_mel_scale(sr, n_fft, n_mels, device):
+    key = (sr, n_fft, n_mels, str(device))
+    inverse = _INVERSE_MEL_CACHE.get(key)
+    if inverse is None or _module_device(inverse, device) != device:
+        inverse = torchaudio.transforms.InverseMelScale(
+            n_stft=n_fft // 2 + 1,
+            n_mels=n_mels,
+            sample_rate=sr,
+            norm="slaney",
+            mel_scale="slaney",
+        ).to(device)
+        _INVERSE_MEL_CACHE[key] = inverse
+    return inverse
+
+
+def _get_griffinlim(n_fft, hop_length, device):
+    key = (n_fft, hop_length, str(device))
+    griffinlim = _GRIFFINLIM_CACHE.get(key)
+    if griffinlim is None or _module_device(griffinlim, device) != device:
+        griffinlim = torchaudio.transforms.GriffinLim(
+            n_fft=n_fft,
+            n_iter=64,
+            win_length=n_fft,
+            hop_length=hop_length,
+            power=1.0,
+            momentum=0.99,
+        ).to(device)
+        _GRIFFINLIM_CACHE[key] = griffinlim
+    return griffinlim
 
 
 def torch_audio_to_mel_batch(audio_batch, sr: int = TARGET_SR, n_mels: int = 128,
@@ -2943,8 +2997,10 @@ class SharedCQTDiffProxyModel(nn.Module):
         x_in = x.squeeze(1) if x.dim() == 3 else x
 
         # STFT magnitude
+        window = _get_hann_window(self.n_fft, x_in.device)
         spec = torch.stft(
             x_in, n_fft=self.n_fft, hop_length=self.hop_length,
+            window=window,
             return_complex=True
         )
         mag = spec.abs().permute(0, 2, 1)  # (B, T, F)
@@ -3005,8 +3061,10 @@ class SharedCQTDiffProxyModel(nn.Module):
         pred_mag = pred_mag.permute(0, 2, 1)  # (B, F, T)
 
         # Phase dari input audio (buat rekonstruksi)
+        window = _get_hann_window(self.n_fft, x_in.device)
         input_spec = torch.stft(
             x_in, n_fft=self.n_fft, hop_length=self.hop_length,
+            window=window,
             return_complex=True
         )
         input_phase = torch.angle(input_spec)
@@ -3017,6 +3075,7 @@ class SharedCQTDiffProxyModel(nn.Module):
         # iSTFT -> waveform
         reconstructed = torch.istft(
             recon_spec, n_fft=self.n_fft, hop_length=self.hop_length,
+            window=window,
             length=x_in.shape[-1]
         )
 
@@ -3134,56 +3193,54 @@ class SharedMAIDDecoder(nn.Module):
 
         return x
 
+    def mel_db_to_audio_tensor(self, mel_db_pred: torch.Tensor, sr: int = TARGET_SR, target_len: int = None):
+        """Inverse mel reconstruction with TorchAudio modules kept on the decoder device."""
+        if mel_db_pred.dim() == 2:
+            mel_db_pred = mel_db_pred.unsqueeze(0)
+
+        with torch.autocast(device_type="cuda" if mel_db_pred.device.type == "cuda" else "cpu", enabled=False):
+            mel_power = torch.pow(10.0, mel_db_pred.float() / 10.0).clamp_min(1e-10)
+            inverse_mel = _get_inverse_mel_scale(sr, self.n_fft, self.n_mels, mel_power.device)
+            griffinlim = _get_griffinlim(self.n_fft, self.hop_length, mel_power.device)
+            linear_power = inverse_mel(mel_power).clamp_min(1e-10)
+            reconstructed = griffinlim(linear_power.sqrt())
+
+        if target_len is not None:
+            if reconstructed.shape[-1] > target_len:
+                reconstructed = reconstructed[..., :target_len]
+            elif reconstructed.shape[-1] < target_len:
+                reconstructed = F.pad(reconstructed, (0, target_len - reconstructed.shape[-1]))
+        return reconstructed
+
     def mel_db_to_audio(self, mel_db_pred: np.ndarray, sr: int = TARGET_SR):
-        mel_power = np.maximum(librosa.db_to_power(mel_db_pred), 1e-10)
-        stft = librosa.feature.inverse.mel_to_stft(
-            mel_power,
-            sr=sr,
-            n_fft=self.n_fft,
-            power=2.0,
-        )
-        return librosa.griffinlim(
-            stft,
-            n_iter=128,
-            hop_length=self.hop_length,
-            momentum=0.99,
-        )
+        mel_tensor = torch.as_tensor(mel_db_pred, dtype=torch.float32, device=self.device)
+        audio = self.mel_db_to_audio_tensor(mel_tensor, sr=sr)
+        return audio.squeeze(0).detach().cpu().numpy()
 
     def inpaint(self, masked_audio: torch.Tensor, mask: torch.Tensor, conditioning=None, n_steps: int = 50):
         if masked_audio.dim() == 1:
             masked_audio = masked_audio.unsqueeze(0)
         if mask.dim() == 1:
             mask = mask.unsqueeze(0)
+        masked_audio = masked_audio.to(self.device, dtype=torch.float32, non_blocking=True)
+        mask = mask.to(self.device, dtype=torch.bool, non_blocking=True)
 
         base_mel_db, _ = self.audio_to_mel_batch(masked_audio)
         pred_mel_norm = self.predict_mel_norm(masked_audio, conditioning=conditioning)
         pred_mel_db = pred_mel_norm.permute(0, 2, 1) * 40.0 - 40.0
-        gap_frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[1]).detach().cpu().numpy()
+        gap_frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[1]).unsqueeze(1)
 
-        outputs = []
-        base_mel_db_np = base_mel_db.detach().cpu().numpy()
-        pred_mel_db_np = pred_mel_db.detach().cpu().numpy()
-        mask_np = mask.detach().cpu().numpy().astype(bool)
-        masked_audio_np = masked_audio.detach().cpu().numpy()
+        output_mel_db = torch.where(gap_frame_mask, pred_mel_db, base_mel_db)
+        reconstructed = self.mel_db_to_audio_tensor(
+            output_mel_db,
+            sr=TARGET_SR,
+            target_len=masked_audio.shape[-1],
+        )
 
-        for batch_idx in range(masked_audio.shape[0]):
-            output_mel_db = base_mel_db_np[batch_idx].copy()
-            output_mel_db[:, gap_frame_mask[batch_idx]] = pred_mel_db_np[batch_idx][:, gap_frame_mask[batch_idx]]
-
-            reconstructed = self.mel_db_to_audio(output_mel_db)
-            target_len = masked_audio_np.shape[-1]
-            if len(reconstructed) > target_len:
-                reconstructed = reconstructed[:target_len]
-            elif len(reconstructed) < target_len:
-                reconstructed = np.pad(reconstructed, (0, target_len - len(reconstructed)))
-
-            output = masked_audio_np[batch_idx].copy()
-            output[mask_np[batch_idx]] = reconstructed[mask_np[batch_idx]]
-            outputs.append(output)
-
-        if len(outputs) == 1:
-            return outputs[0]
-        return np.stack(outputs, axis=0)
+        output = torch.where(mask.bool(), reconstructed, masked_audio)
+        if output.shape[0] == 1:
+            return output[0].detach().cpu().numpy()
+        return output.detach().cpu().numpy()
 
 
 
