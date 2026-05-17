@@ -20,6 +20,8 @@ if command -v apt-get >/dev/null 2>&1; then
     build-essential \
     curl \
     ffmpeg \
+    gcc-12 \
+    g++-12 \
     git \
     libsndfile1 \
     openjdk-17-jdk \
@@ -55,13 +57,29 @@ if ! command -v bazel >/dev/null 2>&1; then
 fi
 export PYTHON_BIN_PATH="$(python -c 'import sys; print(sys.executable)')"
 export PYTHON_LIB_PATH="$(python -c 'import site; print(site.getsitepackages()[0])')"
+if command -v gcc-12 >/dev/null 2>&1 && command -v g++-12 >/dev/null 2>&1; then
+  export CC="$(command -v gcc-12)"
+  export CXX="$(command -v g++-12)"
+fi
 python -c "import numpy; print('numpy for ViSQOL build:', numpy.__version__, numpy.get_include())"
 if [ ! -d external/visqol/.git ]; then
   git clone https://github.com/google/visqol.git external/visqol
 fi
 (
   cd external/visqol
-  bazel build -c opt //:similarity_result_py_pb2 //:visqol_config_py_pb2 //python:visqol_lib_py.so
+  bazel clean --expunge || true
+  bazel build -c opt \
+    --repo_env=CC="$CC" \
+    --repo_env=CXX="$CXX" \
+    --action_env=CC="$CC" \
+    --action_env=CXX="$CXX" \
+    --copt=-Wno-array-bounds \
+    --copt=-Wno-stringop-overflow \
+    --copt=-Wno-maybe-uninitialized \
+    --host_copt=-Wno-array-bounds \
+    --host_copt=-Wno-stringop-overflow \
+    --host_copt=-Wno-maybe-uninitialized \
+    //:similarity_result_py_pb2 //:visqol_config_py_pb2 //python:visqol_lib_py.so
 )
 pip install --no-deps --no-build-isolation --no-cache-dir "git+https://github.com/google/visqol.git" || true
 VISQOL_SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
