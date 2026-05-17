@@ -180,7 +180,7 @@ print("   Proxy/replika dinonaktifkan; pipeline akan berhenti jika model asli be
 import os
 
 # --- PARAMETER -----------------------------------------------
-PIPELINE_STAGE_NAME = "code_v3_final_run"  # Stage override: isolasi output/checkpoint untuk notebook ini.
+PIPELINE_STAGE_NAME = "code_v3_final_run_real"  # Stage override: isolasi output/checkpoint untuk notebook ini.
 IS_LOCAL = True   # Vast.ai/local default. Ganti ke False hanya jika menggunakan Google Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 BASE_LOCAL_ROOT = os.environ.get("MUSIC_INPAINTING_ROOT", os.path.join(PROJECT_ROOT, "music_inpainting"))
