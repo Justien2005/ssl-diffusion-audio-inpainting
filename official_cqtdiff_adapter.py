@@ -155,6 +155,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
 
     def _to_native(self, audio):
         x = audio.squeeze(1) if audio.dim() == 3 else audio
+        x = x.float()
         if self.target_sr != self.native_sr:
             x = torchaudio.functional.resample(x, self.target_sr, self.native_sr)
         return self._pad_or_crop(x, self.native_len)
@@ -166,14 +167,16 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         return self._pad_or_crop(x, target_len)
 
     def _backbone_predict(self, audio):
-        native = self._to_native(audio)
-        sigma = torch.full((native.shape[0], 1), self.sigma, device=native.device, dtype=native.dtype)
-        if any(param.requires_grad for param in self.backbone.parameters()):
-            pred = self.backbone(native, sigma)
-        else:
-            with torch.no_grad():
+        device_type = self.device_ref.type
+        with torch.autocast(device_type=device_type, enabled=False):
+            native = self._to_native(audio).float()
+            sigma = torch.full((native.shape[0], 1), self.sigma, device=native.device, dtype=torch.float32)
+            if any(param.requires_grad for param in self.backbone.parameters()):
                 pred = self.backbone(native, sigma)
-        return self._from_native(pred, audio.shape[-1])
+            else:
+                with torch.no_grad():
+                    pred = self.backbone(native, sigma)
+            return self._from_native(pred.float(), audio.shape[-1])
 
     def _sample_to_frame_mask(self, mask, n_frames):
         pooled = F.avg_pool1d(
@@ -189,27 +192,30 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         return pooled
 
     def get_features(self, x, mask=None):
-        x = x.squeeze(1) if x.dim() == 3 else x
-        backbone_pred = self._backbone_predict(x)
-        if mask is not None:
-            base = torch.where(mask.bool(), backbone_pred, x)
-        else:
-            base = backbone_pred
+        device_type = self.device_ref.type
+        with torch.autocast(device_type=device_type, enabled=False):
+            x = x.squeeze(1) if x.dim() == 3 else x
+            x = x.float()
+            backbone_pred = self._backbone_predict(x)
+            if mask is not None:
+                base = torch.where(mask.bool(), backbone_pred, x)
+            else:
+                base = backbone_pred
 
-        window = torch.hann_window(self.n_fft, device=base.device)
-        spec = torch.stft(
-            base,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            window=window,
-            return_complex=True,
-        )
-        mag = spec.abs().permute(0, 2, 1)
-        if mask is None:
-            frame_mask = torch.zeros(mag.shape[0], mag.shape[1], device=mag.device, dtype=mag.dtype)
-        else:
-            frame_mask = self._sample_to_frame_mask(mask, mag.shape[1]).to(mag.dtype)
-        return self.feature_encoder(torch.cat([mag, frame_mask.unsqueeze(-1)], dim=-1))
+            window = torch.hann_window(self.n_fft, device=base.device)
+            spec = torch.stft(
+                base.float(),
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                window=window,
+                return_complex=True,
+            )
+            mag = spec.abs().permute(0, 2, 1)
+            if mask is None:
+                frame_mask = torch.zeros(mag.shape[0], mag.shape[1], device=mag.device, dtype=mag.dtype)
+            else:
+                frame_mask = self._sample_to_frame_mask(mask, mag.shape[1]).to(mag.dtype)
+            return self.feature_encoder(torch.cat([mag, frame_mask.unsqueeze(-1)], dim=-1).float())
 
     def decode_features(self, features):
         return self.mag_decoder(features)
@@ -230,7 +236,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         masked_audio = masked_audio.to(self.device_ref, dtype=torch.float32)
         mask = mask.to(self.device_ref).bool()
 
-        features = self.get_features(masked_audio, mask)
+        features = self.get_features(masked_audio.float(), mask)
         if conditioning is not None:
             conditioning = conditioning.to(self.device_ref, dtype=features.dtype)
             if conditioning.dim() == 2:
@@ -238,22 +244,24 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             features = features + conditioning
         pred_mag = self.decode_features(features).permute(0, 2, 1)
 
-        window = torch.hann_window(self.n_fft, device=masked_audio.device)
-        input_spec = torch.stft(
-            masked_audio,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            window=window,
-            return_complex=True,
-        )
-        recon_spec = pred_mag * torch.exp(1j * torch.angle(input_spec))
-        reconstructed = torch.istft(
-            recon_spec,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            window=window,
-            length=masked_audio.shape[-1],
-        )
+        device_type = self.device_ref.type
+        with torch.autocast(device_type=device_type, enabled=False):
+            window = torch.hann_window(self.n_fft, device=masked_audio.device)
+            input_spec = torch.stft(
+                masked_audio.float(),
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                window=window,
+                return_complex=True,
+            )
+            recon_spec = pred_mag.float() * torch.exp(1j * torch.angle(input_spec))
+            reconstructed = torch.istft(
+                recon_spec,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                window=window,
+                length=masked_audio.shape[-1],
+            )
 
         output = torch.where(mask, reconstructed, masked_audio)
         if output.shape[0] == 1:
