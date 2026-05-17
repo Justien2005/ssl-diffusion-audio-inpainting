@@ -3670,7 +3670,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -3795,7 +3795,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -3920,7 +3920,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4044,7 +4044,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
 BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 100
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
