@@ -21,3 +21,12 @@ python code_it_v2.py
 # Kalau smoke test sudah lolos, jalankan final pipeline.
 source env_instance.sh
 python code_final_run_v2.py
+all --user --name=venv
+---
+
+all --user --name=venv
+---
+
+all --user --name=venv
+---
+

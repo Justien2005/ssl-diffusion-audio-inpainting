@@ -32,6 +32,18 @@ pip install torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
 echo "==> Installing project requirements"
 pip install -r requirements.txt
 
+echo "==> Re-confirming CUDA PyTorch stack after requirements"
+pip install --force-reinstall torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("torch cuda:", torch.version.cuda)
+print("cuda available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("gpu:", torch.cuda.get_device_name(0))
+    print("arch list:", torch.cuda.get_arch_list())
+PY
+
 echo "==> Ensuring external repositories exist"
 mkdir -p external
 if [ ! -d external/CQTdiff/.git ]; then
