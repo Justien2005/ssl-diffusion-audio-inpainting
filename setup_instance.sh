@@ -16,7 +16,20 @@ cd "$REPO_DIR"
 echo "==> Installing OS packages"
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
-  apt-get install -y git wget unzip ffmpeg libsndfile1 python3.10 python3.10-venv
+  apt-get install -y \
+    build-essential \
+    curl \
+    ffmpeg \
+    git \
+    libsndfile1 \
+    openjdk-17-jdk \
+    protobuf-compiler \
+    python3.10 \
+    python3.10-dev \
+    python3.10-venv \
+    swig \
+    unzip \
+    wget
 fi
 
 echo "==> Creating Python environment: $VENV_DIR"
@@ -32,6 +45,14 @@ pip install torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
 
 echo "==> Installing project requirements"
 pip install -r requirements.txt
+
+echo "==> Installing ViSQOL fallback from google/visqol"
+if ! command -v bazel >/dev/null 2>&1; then
+  curl -L https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64 \
+    -o /usr/local/bin/bazel
+  chmod +x /usr/local/bin/bazel
+fi
+pip install --no-cache-dir "git+https://github.com/google/visqol.git"
 
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
 pip install --force-reinstall torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
@@ -81,11 +102,19 @@ export CQTDIFF_WEIGHTS="$CQT_DIFF_DIR/experiments/cqt/cqt_weights.pt"
 export AUDIOMAE_CHECKPOINT="$AUDIO_MAE_DIR/ckpt/pretrained.pth"
 export OFFICIAL_CQTDIFF_ADAPTER=official_cqtdiff_adapter
 export MAID_ADAPTER=official_maid_adapter
+# Optional override. The pipeline auto-detects the model packaged by google/visqol.
+# export VISQOL_MODEL_PATH="$PROJECT_ROOT/path/to/libsvm_nu_svr_model.txt"
 EOF
 chmod +x env_instance.sh
 
 echo "==> Compile check"
 source env_instance.sh
+python - <<'PY'
+from visqol import visqol_lib_py
+from visqol.pb2 import visqol_config_pb2
+print("visqol:", visqol_lib_py.__file__)
+print("visqol config:", visqol_config_pb2.VisqolConfig().__class__.__name__)
+PY
 python -m py_compile code_it_v2.py code_final_run_v2.py official_cqtdiff_adapter.py official_maid_adapter.py
 
 echo "==> Setup complete"

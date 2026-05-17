@@ -1152,6 +1152,36 @@ def _try_aquatk_peaqb(original, reconstructed, sr):
     return None
 
 
+def _find_visqol_model_path():
+    """Find google/visqol audio-mode SVR model installed with the package."""
+    env_path = os.environ.get("VISQOL_MODEL_PATH")
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    from visqol import visqol_lib_py
+
+    search_roots = []
+    for module_file in [getattr(visqol_lib_py, "__file__", None)]:
+        if module_file:
+            module_dir = os.path.abspath(os.path.dirname(module_file))
+            search_roots.extend([module_dir, os.path.dirname(module_dir)])
+
+    for root in dict.fromkeys(search_roots):
+        candidate = os.path.join(root, "model", "libsvm_nu_svr_model.txt")
+        if os.path.isfile(candidate):
+            return candidate
+
+    for root in dict.fromkeys(search_roots):
+        for dirpath, _, filenames in os.walk(root):
+            if "libsvm_nu_svr_model.txt" in filenames:
+                return os.path.join(dirpath, "libsvm_nu_svr_model.txt")
+
+    raise FileNotFoundError(
+        "ViSQOL audio model libsvm_nu_svr_model.txt tidak ditemukan. "
+        "Install google/visqol via setup_instance.sh atau set VISQOL_MODEL_PATH."
+    )
+
+
 def _compute_visqol_odg(original, reconstructed, sr):
     """Fallback perceptual ODG via ViSQOL music mode."""
     from visqol import visqol_lib_py
@@ -1160,6 +1190,7 @@ def _compute_visqol_odg(original, reconstructed, sr):
     config = visqol_config_pb2.VisqolConfig()
     config.audio.sample_rate = 48000
     config.options.use_speech_scoring = False  # music mode
+    config.options.svr_model_path = _find_visqol_model_path()
 
     api = visqol_lib_py.VisqolApi()
     api.Create(config)
@@ -1235,8 +1266,8 @@ def compute_peaq_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int = 
     try:
         print("fallback ke visqol")
         return _compute_visqol_odg(original, reconstructed, peaq_sr)
-    except Exception:
-        print("fallback ke nsim")
+    except Exception as exc:
+        print(f"⚠️ ViSQOL fallback gagal: {exc}; fallback ke nsim")
         return _compute_nsim_odg(original, reconstructed, peaq_sr)
 
 
