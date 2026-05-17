@@ -5,6 +5,7 @@ audioread
 numpy==1.26.4
 pandas
 scipy
+protobuf==4.25.8
 resampy
 torchvggish
 tqdm

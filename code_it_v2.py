@@ -1185,6 +1185,7 @@ def _find_visqol_model_path():
 def _import_visqol_modules():
     """Import google/visqol modules across namespace-package layouts."""
     import importlib
+    _patch_protobuf_message_factory()
 
     def import_first(candidates):
         last_exc = None
@@ -1196,15 +1197,28 @@ def _import_visqol_modules():
         raise last_exc
 
     visqol_lib_py = import_first([
+        "visqol_lib_py",
         "visqol.visqol_lib_py",
         "python.visqol_lib_py",
-        "visqol_lib_py",
     ])
     visqol_config_pb2 = import_first([
-        "visqol.pb2.visqol_config_pb2",
         "visqol_config_pb2",
+        "visqol.pb2.visqol_config_pb2",
     ])
     return visqol_lib_py, visqol_config_pb2
+
+
+def _patch_protobuf_message_factory():
+    """Restore GetPrototype alias for older ViSQOL bindings on protobuf 4.x."""
+    try:
+        from google.protobuf import message_factory
+    except Exception:
+        return
+
+    factory_cls = getattr(message_factory, "MessageFactory", None)
+    get_message_class = getattr(message_factory, "GetMessageClass", None)
+    if factory_cls and get_message_class and not hasattr(factory_cls, "GetPrototype"):
+        factory_cls.GetPrototype = lambda self, descriptor: get_message_class(descriptor)
 
 
 def _compute_visqol_odg(original, reconstructed, sr):

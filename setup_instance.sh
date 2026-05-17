@@ -41,6 +41,7 @@ source "$VENV_DIR/bin/activate"
 
 python -m pip install --upgrade pip wheel
 python -m pip install "setuptools<82"
+python -m pip install "protobuf==4.25.8"
 
 echo "==> Installing CUDA PyTorch stack"
 pip uninstall -y torch torchvision torchaudio || true
@@ -48,6 +49,7 @@ pip install torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
 
 echo "==> Installing project requirements"
 pip install -r requirements.txt
+python -m pip install --force-reinstall "protobuf==4.25.8"
 
 echo "==> Installing ViSQOL fallback from google/visqol"
 if ! command -v bazel >/dev/null 2>&1; then
@@ -62,6 +64,7 @@ if command -v gcc-12 >/dev/null 2>&1 && command -v g++-12 >/dev/null 2>&1; then
   export CXX="$(command -v g++-12)"
 fi
 python -c "import numpy; print('numpy for ViSQOL build:', numpy.__version__, numpy.get_include())"
+python -c "import google.protobuf; print('protobuf for ViSQOL build:', google.protobuf.__version__)"
 if [ ! -d external/visqol/.git ]; then
   git clone https://github.com/google/visqol.git external/visqol
 fi
@@ -85,6 +88,7 @@ pip install --no-deps --no-build-isolation --no-cache-dir "git+https://github.co
 VISQOL_SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
 mkdir -p "$VISQOL_SITE/visqol/pb2" "$VISQOL_SITE/visqol/model"
 cp external/visqol/bazel-bin/python/visqol_lib_py.so "$VISQOL_SITE/visqol/visqol_lib_py.so"
+cp external/visqol/bazel-bin/python/visqol_lib_py.so "$VISQOL_SITE/visqol_lib_py.so"
 cp external/visqol/bazel-bin/similarity_result_pb2.py "$VISQOL_SITE/visqol/pb2/similarity_result_pb2.py"
 cp external/visqol/bazel-bin/visqol_config_pb2.py "$VISQOL_SITE/visqol/pb2/visqol_config_pb2.py"
 cp external/visqol/bazel-bin/similarity_result_pb2.py "$VISQOL_SITE/similarity_result_pb2.py"
@@ -96,10 +100,13 @@ touch "$VISQOL_SITE/visqol/__init__.py" "$VISQOL_SITE/visqol/pb2/__init__.py"
 
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
 pip install --force-reinstall torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
+python -m pip install --force-reinstall "setuptools<82" "protobuf==4.25.8"
 python - <<'PY'
 import torch
+import google.protobuf
 print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
+print("protobuf:", google.protobuf.__version__)
 print("cuda available:", torch.cuda.is_available())
 if torch.cuda.is_available():
     print("gpu:", torch.cuda.get_device_name(0))
@@ -153,6 +160,16 @@ python - <<'PY'
 import importlib
 import subprocess
 import sys
+from google.protobuf import message_factory
+
+if (
+    hasattr(message_factory, "MessageFactory")
+    and hasattr(message_factory, "GetMessageClass")
+    and not hasattr(message_factory.MessageFactory, "GetPrototype")
+):
+    message_factory.MessageFactory.GetPrototype = (
+        lambda self, descriptor: message_factory.GetMessageClass(descriptor)
+    )
 
 def import_first(candidates):
     last_exc = None
@@ -169,16 +186,23 @@ def import_first(candidates):
     raise last_exc
 
 visqol_lib_py = import_first([
+    "visqol_lib_py",
     "visqol.visqol_lib_py",
     "python.visqol_lib_py",
-    "visqol_lib_py",
 ])
 visqol_config_pb2 = import_first([
-    "visqol.pb2.visqol_config_pb2",
     "visqol_config_pb2",
+    "visqol.pb2.visqol_config_pb2",
 ])
 print("visqol:", visqol_lib_py.__file__)
 print("visqol config:", visqol_config_pb2.VisqolConfig().__class__.__name__)
+config = visqol_config_pb2.VisqolConfig()
+config.audio.sample_rate = 48000
+config.options.use_speech_scoring = False
+config.options.svr_model_path = "visqol/model/libsvm_nu_svr_model.txt"
+api = visqol_lib_py.VisqolApi()
+api.Create(config)
+print("visqol api create: ok")
 PY
 python -m py_compile code_it_v2.py code_final_run_v2.py official_cqtdiff_adapter.py official_maid_adapter.py
 
