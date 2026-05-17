@@ -51,7 +51,7 @@ fi
 echo "==> Downloading AudioMAE checkpoint"
 mkdir -p external/AudioMAE/ckpt
 if [ ! -f external/AudioMAE/ckpt/pretrained.pth ]; then
-  gdown --fuzzy "https://drive.google.com/file/d/${AUDIO_MAE_FILE_ID}/view" \
+  gdown "https://drive.google.com/uc?id=${AUDIO_MAE_FILE_ID}" \
     -O external/AudioMAE/ckpt/pretrained.pth
 else
   echo "AudioMAE checkpoint already present."
