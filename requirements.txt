@@ -2,7 +2,7 @@
 librosa
 soundfile
 audioread
-numpy
+numpy==1.26.4
 pandas
 scipy
 resampy

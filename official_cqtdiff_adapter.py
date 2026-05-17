@@ -44,6 +44,23 @@ def _load_cqtdiff_config(cqt_diff_dir, device):
     return cfg
 
 
+def _patch_cqtdiff_numpy_clip(cqt_diff_dir):
+    """Patch old CQTdiff NSGT code for NumPy 2.x casting rules."""
+    patch_path = os.path.join(cqt_diff_dir, "src", "nsgt", "nsgfwin_sl.py")
+    if not os.path.exists(patch_path):
+        return
+
+    with open(patch_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    old = "    np.clip(M, min_win, np.inf, out=M)\n"
+    new = "    M = np.clip(M.astype(float), min_win, np.inf).astype(int)\n"
+    if old in text and new not in text:
+        with open(patch_path, "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new))
+        print(f"Patched CQTdiff NumPy clip compatibility: {patch_path}")
+
+
 def _find_cqtdiff_weights(cqt_diff_dir):
     candidates = [
         os.environ.get("CQTDIFF_WEIGHTS"),
@@ -79,6 +96,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         self.target_len = int(segment_samples)
         self.gap_durations_ms = list(gap_durations_ms)
         self.cqt_diff_dir = os.path.abspath(cqt_diff_dir)
+        _patch_cqtdiff_numpy_clip(self.cqt_diff_dir)
 
         with _prepend_path(self.cqt_diff_dir):
             from src.models.unet_cqt import Unet_CQT
