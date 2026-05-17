@@ -129,13 +129,13 @@ packages = [
     # "numpy",         # Operasi array numerik
     # "resampy",       # Resampling audio berkualitas tinggi
     # "torchvggish",   # VGGish embeddings untuk FAD legacy
-    "git+https://github.com/ashvala/AQUA-tk.git",  # AquaTK PEAQb untuk evaluasi PEAQ
-    "visqol-lib-py", # Fallback perceptual quality metric jika PEAQb tidak tersedia
+    # "git+https://github.com/ashvala/AQUA-tk.git",  # AquaTK PEAQb untuk evaluasi PEAQ
+    # "visqol-lib-py", # Fallback perceptual quality metric jika PEAQb tidak tersedia
 ]
 
 for pkg in packages:
     print(f"  Installing {pkg}...")
-    subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q"], capture_output=False)
+    subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q"], capture_output=True)
 
 # Clone repo CQT-Diff+ dari GitHub ke folder portabel.
 # Repo resmi: https://github.com/eloimoliner/CQT_diff

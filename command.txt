@@ -11,9 +11,9 @@ cd ssl-diffusion-audio-inpainting
 
 apt install -y python3.10 python3.10-venv
 
-source venv/bin/activate
-
 python3.10 -m venv venv
+
+source venv/bin/activate
 
 pip install --upgrade pip
 
