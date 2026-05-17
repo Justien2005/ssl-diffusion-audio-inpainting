@@ -135,7 +135,7 @@ packages = [
 
 for pkg in packages:
     print(f"  Installing {pkg}...")
-    subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q"], capture_output=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", pkg, "-q"], capture_output=False)
 
 # Clone repo CQT-Diff+ dari GitHub ke folder portabel.
 # Repo resmi: https://github.com/eloimoliner/CQT_diff
