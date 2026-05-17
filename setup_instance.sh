@@ -7,7 +7,8 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$(pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python3.10}"
 VENV_DIR="${VENV_DIR:-venv}"
-TORCH_CUDA_INDEX="${TORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu124}"
+# RTX 50xx / Blackwell (sm_120, e.g. RTX 5090) needs PyTorch CUDA 12.8+ wheels.
+TORCH_CUDA_INDEX="${TORCH_CUDA_INDEX:-https://download.pytorch.org/whl/cu128}"
 AUDIO_MAE_FILE_ID="${AUDIO_MAE_FILE_ID:-18EsFOyZYvBYHkJ7_n7JFFWbj6crz01gq}"
 
 cd "$REPO_DIR"
