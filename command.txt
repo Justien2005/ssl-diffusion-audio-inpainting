@@ -1,31 +1,23 @@
+# Instance setup commands
+
 cd /workspace
 
-apt update
-apt install -y software-properties-common
-add-apt-repository ppa:deadsnakes/ppa -y
-apt update
+git clone https://github.com/Justien2005/ssl-diffusion-audio-inpainting.git thesisall
+cd thesisall
 
-git clone https://github.com/Justien2005/ssl-diffusion-audio-inpainting.git
+# Buat environment, install dependency, clone external repo jika belum ada,
+# download CQT-Diff+ weights, dan download AudioMAE checkpoint dari Google Drive.
+bash setup_instance.sh
 
-cd ssl-diffusion-audio-inpainting
+# Aktifkan environment untuk setiap sesi terminal baru.
+source env_instance.sh
 
-apt install -y python3.10 python3.10-venv
+# Smoke test dulu:
+# - code_it_v2.py harus disetel DATASET_FRACTION = 0.01
+# - NUM_EPOCHS = 1
+# - n_eval_samples = 2
+python code_it_v2.py
 
-python3.10 -m venv venv
-
-source venv/bin/activate
-
-pip install --upgrade pip
-
-# comment torch, torchvision, torchaudio
-pip uninstall torch torchvision torchaudio
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
-pip install -r requirements.txt
-
----
-pip install ipykernel
-
-python -m ipykernel install --user --name=venv
----
-
+# Kalau smoke test sudah lolos, jalankan final pipeline.
+source env_instance.sh
+python code_final_run_v2.py

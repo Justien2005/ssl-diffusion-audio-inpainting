@@ -9,16 +9,19 @@ resampy
 torchvggish
 tqdm
 matplotlib
+plotly
+scikit-learn
+Pillow
 
 # Model stack
-torch
-torchaudio
 transformers
 accelerate
 einops
 timm
 omegaconf
 hydra-core
+wandb
+gdown
 
 # Evaluation
 # visqol-lib-py
