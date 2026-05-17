@@ -52,7 +52,10 @@ if ! command -v bazel >/dev/null 2>&1; then
     -o /usr/local/bin/bazel
   chmod +x /usr/local/bin/bazel
 fi
-pip install --no-cache-dir "git+https://github.com/google/visqol.git"
+export PYTHON_BIN_PATH="$(python -c 'import sys; print(sys.executable)')"
+export PYTHON_LIB_PATH="$(python -c 'import site; print(site.getsitepackages()[0])')"
+python -c "import numpy; print('numpy for ViSQOL build:', numpy.__version__, numpy.get_include())"
+pip install --no-build-isolation --no-cache-dir "git+https://github.com/google/visqol.git"
 
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
 pip install --force-reinstall torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
