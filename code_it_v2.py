@@ -3815,7 +3815,7 @@ import numpy as np
 import os
 
 MODEL_NAME = "baseline_cqtdiff"
-FORCE_RETRAIN = False    # <-- True karena arsitektur model berubah total!
+FORCE_RETRAIN = True    # <-- True karena arsitektur model berubah total!
 FORCE_REEVAL = True     # <-- True buat hapus hasil lama dan re-evaluasi
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 5

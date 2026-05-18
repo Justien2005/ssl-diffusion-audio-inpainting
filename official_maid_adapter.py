@@ -199,7 +199,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         print(f"DDPM-Midi2Performance pretrained checkpoint diload: {ckpt}")
         print(f"MAID backbone load_state_dict: {msg}")
 
-    def audio_to_mel_batch(self, audio_batch, sr=None):
+    def audio_to_mel_batch(self, audio_batch, sr=None, return_ref=False):
         sr = int(sr or self.target_sr)
         if isinstance(audio_batch, torch.Tensor):
             audio = audio_batch.to(self.device, dtype=torch.float32)
@@ -226,6 +226,8 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
             ref_db = mel_db_raw.amax(dim=(1, 2), keepdim=True)
             mel_db = torch.clamp(mel_db_raw - ref_db, min=-80.0)
             mel_norm = torch.clamp((mel_db + 40.0) / 40.0, min=-1.0, max=1.0)
+        if return_ref:
+            return mel_db, mel_norm, ref_db
         return mel_db, mel_norm
 
     def mask_to_frame_mask(self, mask_batch, frame_count):
@@ -337,7 +339,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         masked_audio = masked_audio.to(self.device, dtype=torch.float32)
         mask = mask.to(self.device).bool()
 
-        _, masked_mel_norm = self.audio_to_mel_batch(masked_audio)
+        _, masked_mel_norm, ref_db = self.audio_to_mel_batch(masked_audio, return_ref=True)
         masked_mel_padded, frame_count = self._pad_frames_for_unet(masked_mel_norm)
         cond = self._conditioning_image(masked_mel_padded, conditioning=conditioning)
         x_t = torch.randn_like(cond)
@@ -348,7 +350,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
 
         frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[-1]).unsqueeze(1)
         output_mel_norm = torch.where(frame_mask, pred_mel_norm, masked_mel_norm)
-        output_mel_db = output_mel_norm * 40.0 - 40.0
+        output_mel_db = output_mel_norm * 40.0 - 40.0 + ref_db
         reconstructed = self._mel_db_to_audio_tensor(output_mel_db, masked_audio.shape[-1])
         output = torch.where(mask, reconstructed, masked_audio)
         if output.shape[0] == 1:
