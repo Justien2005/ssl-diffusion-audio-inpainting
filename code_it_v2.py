@@ -3905,7 +3905,7 @@ else:
 
             # Evaluasi pakai fungsi shared
             print("\n📊 Mengevaluasi baseline...")
-            results_df = run_baseline_inpainting_evaluation(baseline_model, device, n_eval_samples=2)
+            results_df = run_baseline_inpainting_evaluation(baseline_model, device, n_eval_samples=50)
 
             print(f"\n📋 Hasil evaluasi BASELINE (CQT-Diff+ standalone, trained tanpa encoder):")
             print(results_df.to_string(index=False))
@@ -4050,7 +4050,7 @@ else:
             cqtdiff_model,
             film_layer,
             device,
-            n_eval_samples=2,
+            n_eval_samples=50,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4180,7 +4180,7 @@ else:
             maid_model,
             film_layer,
             device,
-            n_eval_samples=2,
+            n_eval_samples=50,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4310,7 +4310,7 @@ else:
             cqtdiff_model,
             film_layer,
             device,
-            n_eval_samples=2,
+            n_eval_samples=50,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4439,7 +4439,7 @@ else:
             maid_model,
             film_layer,
             device,
-            n_eval_samples=2,
+            n_eval_samples=50,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
