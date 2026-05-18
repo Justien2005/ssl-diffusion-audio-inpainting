@@ -68,6 +68,16 @@ import shutil
 import platform
 import os
 
+CPU_THREAD_LIMIT = os.environ.get("PIPELINE_CPU_THREADS", "1")
+for _thread_env in [
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+]:
+    os.environ.setdefault(_thread_env, CPU_THREAD_LIMIT)
+
 
 def log_gpu_environment():
     """Log environment GPU lengkap untuk dokumentasi run training."""
@@ -1934,12 +1944,23 @@ import time
 import random
 from tqdm import tqdm
 
-# Vast.ai/Linux: worker > 0 keeps GPU fed. Windows notebooks stay at 0 to avoid spawn pain.
+# Vast.ai/Linux: use a small worker pool. SSL encoder precompute stays single-process
+# because AudioMAE/timm/torchaudio can fan out OpenMP threads inside each worker.
 CPU_COUNT = os.cpu_count() or 4
-AUTO_NUM_WORKERS = 0 if os.name == "nt" else min(8, max(2, CPU_COUNT // 2))
-DATALOADER_PREFETCH_FACTOR = 4
+AUTO_NUM_WORKERS = int(os.environ.get(
+    "PIPELINE_NUM_WORKERS",
+    0 if os.name == "nt" else min(2, max(1, CPU_COUNT // 4)),
+))
+ENCODER_PRECOMPUTE_NUM_WORKERS = int(os.environ.get("ENCODER_PRECOMPUTE_NUM_WORKERS", "0"))
+DATALOADER_PREFETCH_FACTOR = int(os.environ.get("PIPELINE_PREFETCH_FACTOR", "2"))
 CACHE_AUDIO_IN_MEMORY = True
 PRECOMPUTE_ENCODER_LATENTS = True
+
+try:
+    torch.set_num_threads(int(os.environ.get("PIPELINE_TORCH_THREADS", CPU_THREAD_LIMIT)))
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
 
 
 def make_gap_mask(audio_length, gap_ms, sr=TARGET_SR):
@@ -2109,12 +2130,16 @@ def _encoder_cache_path(model_name, split_name, dataset_len):
 def precompute_encoder_latents_for_dataset(base_dataset, encoder_fn, device, batch_size, num_workers,
                                            model_name, split_name):
     """Precompute frozen CLAP/AudioMAE latents so training loop no longer runs CPU preprocessing."""
+    num_workers = ENCODER_PRECOMPUTE_NUM_WORKERS if num_workers is None else min(
+        int(num_workers),
+        ENCODER_PRECOMPUTE_NUM_WORKERS,
+    )
     cache_path = _encoder_cache_path(model_name, split_name, len(base_dataset))
     if os.path.exists(cache_path):
         print(f"   Loading cached encoder latents [{split_name}]: {cache_path}")
         return torch.load(cache_path, map_location="cpu", weights_only=False)
 
-    print(f"   Precomputing encoder latents [{split_name}] ({len(base_dataset)} items)...")
+    print(f"   Precomputing encoder latents [{split_name}] ({len(base_dataset)} items, num_workers={num_workers})...")
     precompute_loader = build_audio_loader(
         base_dataset,
         batch_size=batch_size,
@@ -2166,6 +2191,8 @@ def add_encoder_cache_to_loaders(loaders, encoder_fn, device, model_name, num_wo
 print("✅ Dataset, DataLoader & shared utilities berhasil didefinisikan!")
 print(f"   Gap durations: {GAP_DURATIONS_MS} ms")
 print(f"   AUTO_NUM_WORKERS: {AUTO_NUM_WORKERS}")
+print(f"   ENCODER_PRECOMPUTE_NUM_WORKERS: {ENCODER_PRECOMPUTE_NUM_WORKERS}")
+print(f"   CPU thread env limit: {CPU_THREAD_LIMIT}")
 
 
 # ---
@@ -3568,6 +3595,62 @@ print("   Tersedia: builder encoder asli, adapter decoder asli, checkpoint helpe
 print("   run_hybrid_inpainting_evaluation, run_baseline_inpainting_evaluation")
 
 
+def _parse_csv_arg(value, default_items=None):
+    if value is None or str(value).strip() == "":
+        return list(default_items or [])
+    text = str(value).strip()
+    if text.lower() == "all":
+        return list(default_items or [])
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def _parse_run_selection():
+    import argparse
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--phase", "--run-phase", dest="phase", default=os.environ.get("RUN_PHASE", "all"))
+    parser.add_argument("--models", "--run-models", dest="models", default=os.environ.get("RUN_MODELS", "all"))
+    args, _ = parser.parse_known_args()
+
+    requested_phases = set(_parse_csv_arg(args.phase, ["all"]))
+    if "all" in requested_phases:
+        phases = {"train", "eval", "summary"}
+    else:
+        phases = requested_phases
+
+    valid_phases = {"train", "eval", "summary"}
+    invalid_phases = sorted(phases - valid_phases)
+    if invalid_phases:
+        raise ValueError(f"RUN_PHASE/--phase tidak dikenali: {invalid_phases}. Pilihan: all, train, eval, summary.")
+
+    models = set(_parse_csv_arg(args.models, EXPECTED_MODEL_CONFIGS))
+    invalid_models = sorted(models - set(EXPECTED_MODEL_CONFIGS))
+    if invalid_models:
+        raise ValueError(f"RUN_MODELS/--models tidak dikenali: {invalid_models}. Pilihan: {EXPECTED_MODEL_CONFIGS}")
+
+    return phases, models
+
+
+RUN_PHASES, RUN_MODEL_SELECTION = _parse_run_selection()
+
+
+def should_run_train(model_name):
+    return "train" in RUN_PHASES and model_name in RUN_MODEL_SELECTION
+
+
+def should_run_eval(model_name):
+    return "eval" in RUN_PHASES and model_name in RUN_MODEL_SELECTION
+
+
+def should_run_summary():
+    return "summary" in RUN_PHASES
+
+
+print("\nRun selection:")
+print(f"   phases: {sorted(RUN_PHASES)}")
+print(f"   models: {sorted(RUN_MODEL_SELECTION)}")
+
+
 # ---
 # ## CELL 7 — BASELINE: CQT-Diff+ Standalone (Trained)
 # 
@@ -3620,95 +3703,98 @@ LEARNING_RATE = 1e-4
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
 
 # Hapus hasil lama kalau FORCE_REEVAL aktif (biar check_if_done gak skip)
-if FORCE_REEVAL:
+if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
     old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
         print(f"🗑️ Hasil lama dihapus: {old_result}")
 
 # Hapus checkpoint lama yang inkompatibel dengan arsitektur baru
-if FORCE_RETRAIN:
-    old_ckpt = os.path.join(get_model_checkpoint_dir(MODEL_NAME), f"{MODEL_NAME}_best.pt")
-    if os.path.exists(old_ckpt):
-        os.remove(old_ckpt)
-        print(f"🗑️ Checkpoint lama (inkompatibel) dihapus: {old_ckpt}")
+if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
+    ckpt_dir = get_model_checkpoint_dir(MODEL_NAME)
+    for old_name in [f"{MODEL_NAME}_best.pt", f"{MODEL_NAME}_latest.pt"]:
+        old_ckpt = os.path.join(ckpt_dir, old_name)
+        if os.path.exists(old_ckpt):
+            os.remove(old_ckpt)
+            print(f"🗑️ Checkpoint lama (inkompatibel) dihapus: {old_ckpt}")
 
-if check_if_done(MODEL_NAME):
-    print(f"Baseline {MODEL_NAME} sudah selesai. Lewati cell ini.")
-    record_training_timing(
-        MODEL_NAME, 0.0, NUM_EPOCHS, LEARNING_RATE,
-        batch_size=BATCH_SIZE, dataset_fraction=DATASET_FRACTION,
-        status="skipped_existing_results",
-    )
+if not should_run_train(MODEL_NAME) and not should_run_eval(MODEL_NAME):
+    print(f"⏭️ Skip {MODEL_NAME}: tidak dipilih oleh RUN_PHASE/RUN_MODELS.")
 else:
     device = torch.device("cuda")
-    print(f"🔧 Device: {device}")
-    check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
-    print_gpu_usage("Awal")
-
-    # ============================================================
-    # TRAINING BASELINE (tanpa encoder, tanpa FiLM)
-    # ============================================================
-    # ckpt_dir = get_model_checkpoint_dir(MODEL_NAME)
     ckpt_dir = get_model_checkpoint_dir("baseline_cqtdiff")
-
-    for name in ["baseline_cqtdiff_best.pt", "baseline_cqtdiff_latest.pt"]:
-        p = os.path.join(ckpt_dir, name)
-        if os.path.exists(p):
-            os.remove(p)
-            print("deleted:", p)
-
     ckpt_path = os.path.join(ckpt_dir, f"{MODEL_NAME}_best.pt")
 
-    if os.path.exists(ckpt_path) and not FORCE_RETRAIN:
-        print(f"✅ Baseline checkpoint sudah ada: {ckpt_path}")
+    if should_run_train(MODEL_NAME):
+        print(f"🔧 Device: {device}")
+        check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
+        print_gpu_usage("Awal")
+
+        # ============================================================
+        # TRAINING BASELINE (tanpa encoder, tanpa FiLM)
+        # ============================================================
+        if os.path.exists(ckpt_path) and not FORCE_RETRAIN:
+            print(f"✅ Baseline checkpoint sudah ada: {ckpt_path}")
+        else:
+            print("\n🏋️ Training baseline CQT-Diff+ (tanpa encoder)...")
+            print("   Ini biar perbandingan fair: baseline juga trained,")
+            print("   bedanya cuma TANPA SSL encoder conditioning.\n")
+
+            loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+            baseline_model = build_hybrid_cqtdiff_decoder(device)
+            print_gpu_usage("Sebelum training baseline")
+
+            train_baseline_model(
+                baseline_model,
+                loaders["train"],
+                val_loader=loaders["val"],
+                num_epochs=NUM_EPOCHS,
+                lr=LEARNING_RATE,
+                device=device,
+                checkpoint_dir=ckpt_dir,
+                model_name=MODEL_NAME,
+                batch_size=BATCH_SIZE,
+                dataset_fraction=DATASET_FRACTION,
+            )
+            del baseline_model
+            clear_gpu_memory()
     else:
-        print("\n🏋️ Training baseline CQT-Diff+ (tanpa encoder)...")
-        print("   Ini biar perbandingan fair: baseline juga trained,")
-        print("   bedanya cuma TANPA SSL encoder conditioning.\n")
+        print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE tidak memuat train atau model tidak dipilih.")
 
-        loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
-        baseline_model = build_hybrid_cqtdiff_decoder(device)
-        print_gpu_usage("Sebelum training baseline")
+    if should_run_eval(MODEL_NAME):
+        if check_if_done(MODEL_NAME):
+            print(f"Baseline {MODEL_NAME} sudah selesai. Lewati evaluasi.")
+        else:
+            if not os.path.exists(ckpt_path):
+                raise FileNotFoundError(
+                    f"Checkpoint baseline belum ditemukan di {ckpt_path}. Jalankan training baseline terlebih dahulu."
+                )
 
-        train_baseline_model(
-            baseline_model,
-            loaders["train"],
-            val_loader=loaders["val"],
-            num_epochs=NUM_EPOCHS,
-            lr=LEARNING_RATE,
-            device=device,
-            checkpoint_dir=ckpt_dir,
-            model_name=MODEL_NAME,
-            batch_size=BATCH_SIZE,
-            dataset_fraction=DATASET_FRACTION,
-        )
-        del baseline_model
-        clear_gpu_memory()
+            # ============================================================
+            # EVALUASI BASELINE
+            # ============================================================
+            print("\n📥 Loading trained baseline untuk evaluasi...")
+            baseline_model = build_hybrid_cqtdiff_decoder(device)
+            load_baseline_checkpoint(baseline_model, device)
+            baseline_model.eval()
+            print_gpu_usage("Setelah load baseline")
 
-    # ============================================================
-    # EVALUASI BASELINE
-    # ============================================================
-    print("\n📥 Loading trained baseline untuk evaluasi...")
-    baseline_model = build_hybrid_cqtdiff_decoder(device)
-    load_baseline_checkpoint(baseline_model, device)
-    baseline_model.eval()
-    print_gpu_usage("Setelah load baseline")
+            # Evaluasi pakai fungsi shared
+            print("\n📊 Mengevaluasi baseline...")
+            results_df = run_baseline_inpainting_evaluation(baseline_model, device, n_eval_samples=2)
 
-    # Evaluasi pakai fungsi shared
-    print("\n📊 Mengevaluasi baseline...")
-    results_df = run_baseline_inpainting_evaluation(baseline_model, device, n_eval_samples=2)
+            print(f"\n📋 Hasil evaluasi BASELINE (CQT-Diff+ standalone, trained tanpa encoder):")
+            print(results_df.to_string(index=False))
 
-    print(f"\n📋 Hasil evaluasi BASELINE (CQT-Diff+ standalone, trained tanpa encoder):")
-    print(results_df.to_string(index=False))
+            save_results(results_df, MODEL_NAME)
 
-    save_results(results_df, MODEL_NAME)
+            # UNLOAD
+            print("\n🧹 Membersihkan memori GPU...")
+            clear_gpu_memory(baseline_model)
 
-    # UNLOAD
-    print("\n🧹 Membersihkan memori GPU...")
-    clear_gpu_memory(baseline_model)
-
-    print(f"\n✅ BASELINE {MODEL_NAME} selesai!")
+            print(f"\n✅ BASELINE {MODEL_NAME} selesai!")
+    else:
+        print(f"⏭️ Skip evaluasi {MODEL_NAME}: RUN_PHASE tidak memuat eval atau model tidak dipilih.")
 
 
 # ---
@@ -3746,7 +3832,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
-if hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
+if not should_run_train(MODEL_NAME):
+    print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
     print(f"✅ Checkpoint sudah ada. Skip training: {ckpt_path}")
 else:
     device = torch.device("cuda")
@@ -3800,12 +3888,14 @@ else:
 MODEL_NAME = "clap_cqtdiff"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update arsitektur
 
-if FORCE_REEVAL:
+if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
     old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
-if check_if_done(MODEL_NAME):
+if not should_run_eval(MODEL_NAME):
+    print(f"⏭️ Skip evaluasi {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif check_if_done(MODEL_NAME):
     print(f"Model {MODEL_NAME} sudah selesai. Lewati cell ini.")
 else:
     ckpt_path = get_model_checkpoint_path(MODEL_NAME)
@@ -3871,7 +3961,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
-if hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
+if not should_run_train(MODEL_NAME):
+    print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
     print(f"✅ Checkpoint sudah ada. Skip training: {ckpt_path}")
 else:
     device = torch.device("cuda")
@@ -3925,12 +4017,14 @@ else:
 MODEL_NAME = "clap_maid"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update
 
-if FORCE_REEVAL:
+if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
     old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
-if check_if_done(MODEL_NAME):
+if not should_run_eval(MODEL_NAME):
+    print(f"⏭️ Skip evaluasi {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif check_if_done(MODEL_NAME):
     print(f"Model {MODEL_NAME} sudah selesai. Lewati cell ini.")
 else:
     ckpt_path = get_model_checkpoint_path(MODEL_NAME)
@@ -3996,7 +4090,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
-if hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
+if not should_run_train(MODEL_NAME):
+    print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
     print(f"✅ Checkpoint sudah ada. Skip training: {ckpt_path}")
 else:
     device = torch.device("cuda")
@@ -4050,12 +4146,14 @@ else:
 MODEL_NAME = "audiomae_cqtdiff"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update arsitektur
 
-if FORCE_REEVAL:
+if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
     old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
-if check_if_done(MODEL_NAME):
+if not should_run_eval(MODEL_NAME):
+    print(f"⏭️ Skip evaluasi {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif check_if_done(MODEL_NAME):
     print(f"Model {MODEL_NAME} sudah selesai. Lewati cell ini.")
 else:
     ckpt_path = get_model_checkpoint_path(MODEL_NAME)
@@ -4120,7 +4218,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
-if hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
+if not should_run_train(MODEL_NAME):
+    print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
     print(f"✅ Checkpoint sudah ada. Skip training: {ckpt_path}")
 else:
     device = torch.device("cuda")
@@ -4174,12 +4274,14 @@ else:
 MODEL_NAME = "audiomae_maid"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update
 
-if FORCE_REEVAL:
+if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
     old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
-if check_if_done(MODEL_NAME):
+if not should_run_eval(MODEL_NAME):
+    print(f"⏭️ Skip evaluasi {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif check_if_done(MODEL_NAME):
     print(f"Model {MODEL_NAME} sudah selesai. Lewati cell ini.")
 else:
     ckpt_path = get_model_checkpoint_path(MODEL_NAME)
@@ -4237,6 +4339,10 @@ else:
 #
 # Gap durations: 100, 300, 500, 750, 1200, 1700 ms
 # ============================================================
+
+if not should_run_summary():
+    print("⏭️ Skip summary/visualisasi: RUN_PHASE tidak memuat summary.")
+    sys.exit(0)
 
 import pandas as pd
 import matplotlib.pyplot as plt
