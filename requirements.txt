@@ -25,5 +25,4 @@ gdown
 
 # Evaluation
 visqol-python>=3.3.3
-pyvisqol
 # git+https://github.com/ashvala/AQUA-tk.git

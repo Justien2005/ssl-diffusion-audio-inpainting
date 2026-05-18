@@ -1161,68 +1161,12 @@ def _try_aquatk_peaqb(original, reconstructed, sr):
     return None
 
 
-def _ensure_pyvisqol_model(pyvisqol_module, filename):
-    """Ensure pyvisqol's expected model file exists in its package model dir."""
-    package_dir = os.path.dirname(pyvisqol_module.__file__)
-    model_dir = os.path.join(package_dir, "model")
-    model_path = os.path.join(model_dir, filename)
-    if os.path.isfile(model_path):
-        return model_path
-
-    os.makedirs(model_dir, exist_ok=True)
-    try:
-        from modelscope.hub.file_download import model_file_download
-    except Exception as exc:
-        raise FileNotFoundError(
-            f"Model pyvisqol {filename} tidak ditemukan dan modelscope tidak tersedia."
-        ) from exc
-
-    last_exc = None
-    for remote_path in [f"model/{filename}", filename]:
-        try:
-            downloaded = model_file_download("pengzhendong/visqol", remote_path)
-            shutil.copyfile(downloaded, model_path)
-            return model_path
-        except Exception as exc:
-            last_exc = exc
-
-    import urllib.request
-
-    for url in [
-        f"https://raw.githubusercontent.com/google/visqol/master/model/{filename}",
-        f"https://raw.githubusercontent.com/google/visqol/main/model/{filename}",
-    ]:
-        try:
-            urllib.request.urlretrieve(url, model_path)
-            if os.path.getsize(model_path) > 0:
-                return model_path
-        except Exception as exc:
-            last_exc = exc
-
-    raise FileNotFoundError(f"Gagal download model pyvisqol {filename}.") from last_exc
-
-
 def _moslqo_to_odg(moslqo):
     return float(np.clip(float(moslqo) - 5.0, -4.0, 0.0))
 
 
-def _patch_protobuf_message_factory():
-    """pyvisqol 0.0.x generated pb2 expects protobuf's removed GetPrototype API."""
-    try:
-        from google.protobuf import message_factory
-        if (
-            not hasattr(message_factory.MessageFactory, "GetPrototype")
-            and hasattr(message_factory, "GetMessageClass")
-        ):
-            message_factory.MessageFactory.GetPrototype = (
-                lambda self, descriptor: message_factory.GetMessageClass(descriptor)
-            )
-    except Exception:
-        pass
-
-
 def _compute_visqol_python_odg(original, reconstructed, sr):
-    """Preferred ViSQOL fallback via visqol-python pure Python API."""
+    """ViSQOL fallback via visqol-python pure Python API."""
     from visqol import VisqolApi
 
     orig_48k = librosa.resample(original, orig_sr=sr, target_sr=48000).astype(np.float64)
@@ -1236,41 +1180,9 @@ def _compute_visqol_python_odg(original, reconstructed, sr):
     return _moslqo_to_odg(result.moslqo)
 
 
-def _compute_pyvisqol_odg(original, reconstructed, sr):
-    """Legacy fallback via pyvisqol/official C++ binding."""
-    _patch_protobuf_message_factory()
-    import pyvisqol
-    from pyvisqol import visqol_lib_py
-    from pyvisqol.pb2 import visqol_config_pb2
-
-    orig_48k = librosa.resample(original, orig_sr=sr, target_sr=48000).astype(np.float64)
-    recon_48k = librosa.resample(reconstructed, orig_sr=sr, target_sr=48000).astype(np.float64)
-    n = min(len(orig_48k), len(recon_48k))
-    orig_48k, recon_48k = orig_48k[:n], recon_48k[:n]
-
-    model_path = _ensure_pyvisqol_model(pyvisqol, "libsvm_nu_svr_model.txt")
-    config = visqol_config_pb2.VisqolConfig()
-    config.audio.sample_rate = 48000
-    config.options.use_speech_scoring = False
-    config.options.svr_model_path = model_path
-
-    api = visqol_lib_py.VisqolApi()
-    api.Create(config)
-    return _moslqo_to_odg(api.Measure(orig_48k, recon_48k).moslqo)
-
-
 def _compute_visqol_odg(original, reconstructed, sr):
     """Fallback perceptual ODG via ViSQOL audio mode."""
-    errors = []
-    for name, fn in [
-        ("visqol-python", _compute_visqol_python_odg),
-        ("pyvisqol", _compute_pyvisqol_odg),
-    ]:
-        try:
-            return fn(original, reconstructed, sr)
-        except Exception as exc:
-            errors.append(f"{name}: {exc}")
-    raise RuntimeError("; ".join(errors))
+    return _compute_visqol_python_odg(original, reconstructed, sr)
 
 
 def _compute_nsim_odg(original, reconstructed, sr):

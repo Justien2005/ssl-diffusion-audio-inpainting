@@ -39,7 +39,7 @@ pip uninstall -y torch torchvision torchaudio || true
 pip install torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
 
 echo "==> Installing project requirements"
-pip uninstall -y visqol || true
+pip uninstall -y visqol pyvisqol || true
 pip install -r requirements.txt
 
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
@@ -62,6 +62,9 @@ if [ ! -d external/CQTdiff/.git ]; then
 fi
 if [ ! -d external/AudioMAE/.git ]; then
   git clone https://github.com/facebookresearch/AudioMAE.git external/AudioMAE
+fi
+if [ ! -d external/DDPM-Midi2Performance-Model/.git ]; then
+  git clone https://github.com/FlyToYourMooN/DDPM-Midi2Performance-Model.git external/DDPM-Midi2Performance-Model
 fi
 
 echo "==> Downloading CQT-Diff+ weights"
@@ -87,6 +90,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/venv/bin/activate"
 export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export CQT_DIFF_DIR="$PROJECT_ROOT/external/CQTdiff"
 export AUDIO_MAE_DIR="$PROJECT_ROOT/external/AudioMAE"
+export MIDI2PERFORMANCE_DIR="$PROJECT_ROOT/external/DDPM-Midi2Performance-Model"
 export CQTDIFF_WEIGHTS="$CQT_DIFF_DIR/experiments/cqt/cqt_weights.pt"
 export AUDIOMAE_CHECKPOINT="$AUDIO_MAE_DIR/ckpt/pretrained.pth"
 export OFFICIAL_CQTDIFF_ADAPTER=official_cqtdiff_adapter
@@ -97,51 +101,18 @@ chmod +x env_instance.sh
 echo "==> Compile check"
 source env_instance.sh
 python - <<'PY'
-import os
-import shutil
-import urllib.request
+import numpy as np
+from visqol import VisqolApi
 
-import pyvisqol
-print("pyvisqol:", getattr(pyvisqol, "__file__", pyvisqol))
-from modelscope.hub.file_download import model_file_download
-from pyvisqol import visqol_lib_py
-from pyvisqol.pb2 import visqol_config_pb2
+sr = 48000
+t = np.arange(sr, dtype=np.float64) / sr
+ref = 0.1 * np.sin(2.0 * np.pi * 440.0 * t)
+deg = ref.copy()
 
-model_dir = os.path.join(os.path.dirname(pyvisqol.__file__), "model")
-os.makedirs(model_dir, exist_ok=True)
-model_path = os.path.join(model_dir, "libsvm_nu_svr_model.txt")
-if not os.path.isfile(model_path):
-    downloaded = None
-    for remote in ["model/libsvm_nu_svr_model.txt", "libsvm_nu_svr_model.txt"]:
-        try:
-            downloaded = model_file_download("pengzhendong/visqol", remote)
-            break
-        except Exception:
-            pass
-    if downloaded is None:
-        for url in [
-            "https://raw.githubusercontent.com/google/visqol/master/model/libsvm_nu_svr_model.txt",
-            "https://raw.githubusercontent.com/google/visqol/main/model/libsvm_nu_svr_model.txt",
-        ]:
-            try:
-                urllib.request.urlretrieve(url, model_path)
-                if os.path.getsize(model_path) > 0:
-                    downloaded = model_path
-                    break
-            except Exception:
-                pass
-    if downloaded is None:
-        raise FileNotFoundError("Tidak bisa download libsvm_nu_svr_model.txt untuk pyvisqol.")
-    if downloaded != model_path:
-        shutil.copyfile(downloaded, model_path)
-
-config = visqol_config_pb2.VisqolConfig()
-config.audio.sample_rate = 48000
-config.options.use_speech_scoring = False
-config.options.svr_model_path = model_path
-api = visqol_lib_py.VisqolApi()
-api.Create(config)
-print("pyvisqol api create: ok")
+api = VisqolApi()
+api.create(mode="audio")
+result = api.measure_from_arrays(ref, deg, sample_rate=sr)
+print("visqol-python api create/measure: ok", float(result.moslqo))
 PY
 python -m py_compile code_it_v2.py code_final_run_v2.py official_cqtdiff_adapter.py official_maid_adapter.py
 
