@@ -1202,8 +1202,43 @@ def _ensure_pyvisqol_model(pyvisqol_module, filename):
     raise FileNotFoundError(f"Gagal download model pyvisqol {filename}.") from last_exc
 
 
-def _compute_visqol_odg(original, reconstructed, sr):
-    """Fallback perceptual ODG via pyvisqol audio mode."""
+def _moslqo_to_odg(moslqo):
+    return float(np.clip(float(moslqo) - 5.0, -4.0, 0.0))
+
+
+def _patch_protobuf_message_factory():
+    """pyvisqol 0.0.x generated pb2 expects protobuf's removed GetPrototype API."""
+    try:
+        from google.protobuf import message_factory
+        if (
+            not hasattr(message_factory.MessageFactory, "GetPrototype")
+            and hasattr(message_factory, "GetMessageClass")
+        ):
+            message_factory.MessageFactory.GetPrototype = (
+                lambda self, descriptor: message_factory.GetMessageClass(descriptor)
+            )
+    except Exception:
+        pass
+
+
+def _compute_visqol_python_odg(original, reconstructed, sr):
+    """Preferred ViSQOL fallback via visqol-python pure Python API."""
+    from visqol import VisqolApi
+
+    orig_48k = librosa.resample(original, orig_sr=sr, target_sr=48000).astype(np.float64)
+    recon_48k = librosa.resample(reconstructed, orig_sr=sr, target_sr=48000).astype(np.float64)
+    n = min(len(orig_48k), len(recon_48k))
+    orig_48k, recon_48k = orig_48k[:n], recon_48k[:n]
+
+    api = VisqolApi()
+    api.create(mode="audio")
+    result = api.measure_from_arrays(orig_48k, recon_48k, sample_rate=48000)
+    return _moslqo_to_odg(result.moslqo)
+
+
+def _compute_pyvisqol_odg(original, reconstructed, sr):
+    """Legacy fallback via pyvisqol/official C++ binding."""
+    _patch_protobuf_message_factory()
     import pyvisqol
     from pyvisqol import visqol_lib_py
     from pyvisqol.pb2 import visqol_config_pb2
@@ -1221,8 +1256,21 @@ def _compute_visqol_odg(original, reconstructed, sr):
 
     api = visqol_lib_py.VisqolApi()
     api.Create(config)
-    moslqo = api.Measure(orig_48k, recon_48k).moslqo
-    return float(np.clip(moslqo - 5.0, -4.0, 0.0))
+    return _moslqo_to_odg(api.Measure(orig_48k, recon_48k).moslqo)
+
+
+def _compute_visqol_odg(original, reconstructed, sr):
+    """Fallback perceptual ODG via ViSQOL audio mode."""
+    errors = []
+    for name, fn in [
+        ("visqol-python", _compute_visqol_python_odg),
+        ("pyvisqol", _compute_pyvisqol_odg),
+    ]:
+        try:
+            return fn(original, reconstructed, sr)
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    raise RuntimeError("; ".join(errors))
 
 
 def _compute_nsim_odg(original, reconstructed, sr):

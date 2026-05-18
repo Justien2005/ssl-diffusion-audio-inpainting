@@ -1,5 +1,10 @@
 # Instance setup commands
 
+apt update
+apt install -y software-properties-common
+add-apt-repository ppa:deadsnakes/ppa -y
+apt update
+
 cd /workspace
 
 git clone https://github.com/Justien2005/ssl-diffusion-audio-inpainting.git thesisall
