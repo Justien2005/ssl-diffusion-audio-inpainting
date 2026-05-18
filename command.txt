@@ -37,3 +37,4 @@ all --user --name=venv
 all --user --name=venv
 ---
 
+python code_final_run_v2.py --phase train --models clap_maid --auto-stop

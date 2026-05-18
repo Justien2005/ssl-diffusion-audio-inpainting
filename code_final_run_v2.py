@@ -967,6 +967,8 @@ import pandas as pd
 from scipy.linalg import sqrtm
 
 _PEAQ_FALLBACK_WARNED = False
+EVAL_USE_GPU = os.environ.get("EVAL_USE_GPU", "1").strip().lower() not in {"0", "false", "no", "off"}
+EVAL_PEAQ_BACKEND = os.environ.get("EVAL_PEAQ_BACKEND", "fast_gpu").strip().lower()
 
 
 def compute_lsd(original: np.ndarray, reconstructed: np.ndarray,
@@ -1080,6 +1082,139 @@ def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TAR
 
     fad = mean_diff + np.trace(sigma1 + sigma2 - 2 * covmean)
     return float(np.real(fad))
+
+
+def _eval_device():
+    import torch
+    return torch.device("cuda" if EVAL_USE_GPU and torch.cuda.is_available() else "cpu")
+
+
+def _stack_audio_gpu(audio_list, device):
+    import torch
+    min_len = min(len(audio) for audio in audio_list)
+    arr = np.stack([np.asarray(audio[:min_len], dtype=np.float32) for audio in audio_list], axis=0)
+    return torch.as_tensor(arr, dtype=torch.float32, device=device), min_len
+
+
+def _torch_logmel(audio, sr, n_mels=128, n_fft=2048, hop_length=512):
+    import torch
+    import torchaudio
+
+    window = torch.hann_window(n_fft, device=audio.device)
+    spec = torch.stft(
+        audio.float(),
+        n_fft=n_fft,
+        hop_length=hop_length,
+        window=window,
+        return_complex=True,
+    )
+    power = spec.abs().pow(2.0)
+    mel_basis = torchaudio.functional.melscale_fbanks(
+        n_freqs=n_fft // 2 + 1,
+        f_min=0.0,
+        f_max=sr / 2,
+        n_mels=n_mels,
+        sample_rate=sr,
+        norm="slaney",
+        mel_scale="slaney",
+    ).to(device=audio.device, dtype=torch.float32).T.contiguous()
+    mel_power = torch.einsum("mf,bft->bmt", mel_basis, power).clamp_min(1e-10)
+    mel_db = 10.0 * torch.log10(mel_power)
+    mel_db = mel_db - mel_db.amax(dim=(1, 2), keepdim=True)
+    return torch.clamp(mel_db, min=-80.0)
+
+
+def compute_lsd_batch_gpu(original_audios, reconstructed_audios, gap_ms, sr=TARGET_SR,
+                          n_fft=2048, hop_length=512, frame_pad=2):
+    import torch
+
+    device = _eval_device()
+    if device.type != "cuda":
+        raise RuntimeError("GPU tidak tersedia untuk compute_lsd_batch_gpu")
+
+    originals, n = _stack_audio_gpu(original_audios, device)
+    recons, _ = _stack_audio_gpu(reconstructed_audios, device)
+    originals = originals[:, :n]
+    recons = recons[:, :n]
+
+    window = torch.hann_window(n_fft, device=device)
+    o_power = torch.stft(originals, n_fft=n_fft, hop_length=hop_length, window=window, return_complex=True).abs().pow(2)
+    r_power = torch.stft(recons, n_fft=n_fft, hop_length=hop_length, window=window, return_complex=True).abs().pow(2)
+    eps = torch.clamp(1e-6 * o_power.amax(dim=(1, 2), keepdim=True), min=1e-10)
+    log_diff = 10.0 * (torch.log10(o_power + eps) - torch.log10(r_power + eps))
+
+    gap_samples = int(round(sr * gap_ms / 1000))
+    center = n // 2
+    gap_start = center - gap_samples // 2
+    gap_end = gap_start + gap_samples
+    f_start = max(0, gap_start // hop_length - frame_pad)
+    f_end = min(o_power.shape[-1], gap_end // hop_length + frame_pad + 1)
+    log_diff = log_diff[:, :, f_start:f_end]
+
+    scores = torch.sqrt(torch.mean(log_diff.pow(2), dim=1)).mean(dim=1)
+    return scores.detach().cpu().numpy().astype(np.float64)
+
+
+def extract_fad_features_gpu(audio_list, sr=TARGET_SR):
+    device = _eval_device()
+    if device.type != "cuda":
+        raise RuntimeError("GPU tidak tersedia untuk extract_fad_features_gpu")
+    audio, _ = _stack_audio_gpu(audio_list, device)
+    with __import__("torch").inference_mode():
+        mel_db = _torch_logmel(audio, sr)
+        features = mel_db.mean(dim=-1)
+    return features.detach().cpu().numpy().astype(np.float64)
+
+
+def compute_fad_gpu(original_audios, reconstructed_audios, sr=TARGET_SR):
+    orig_features = extract_fad_features_gpu(original_audios, sr)
+    recon_features = extract_fad_features_gpu(reconstructed_audios, sr)
+
+    mu1 = np.mean(orig_features, axis=0)
+    mu2 = np.mean(recon_features, axis=0)
+    d = orig_features.shape[1]
+    if len(orig_features) < 2 or len(recon_features) < 2:
+        return float(np.sum((mu1 - mu2) ** 2))
+
+    sigma1 = np.cov(orig_features, rowvar=False) + 1e-6 * np.eye(d)
+    sigma2 = np.cov(recon_features, rowvar=False) + 1e-6 * np.eye(d)
+    diff = mu1 - mu2
+    covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+    return float(np.real(np.dot(diff, diff) + np.trace(sigma1 + sigma2 - 2 * covmean)))
+
+
+def compute_nsim_odg_batch_gpu(original_audios, reconstructed_audios, sr=TARGET_SR):
+    import torch
+
+    device = _eval_device()
+    if device.type != "cuda":
+        raise RuntimeError("GPU tidak tersedia untuk compute_nsim_odg_batch_gpu")
+    originals, n = _stack_audio_gpu(original_audios, device)
+    recons, _ = _stack_audio_gpu(reconstructed_audios, device)
+    originals = originals[:, :n]
+    recons = recons[:, :n]
+
+    with torch.inference_mode():
+        orig_log = _torch_logmel(originals, sr)
+        recon_log = _torch_logmel(recons, sr)
+        frames = min(orig_log.shape[-1], recon_log.shape[-1])
+        orig_log = orig_log[..., :frames]
+        recon_log = recon_log[..., :frames]
+
+        c1, c2 = 1e-4, 1e-4
+        mu_o = orig_log.mean(dim=1)
+        mu_r = recon_log.mean(dim=1)
+        sig_o = orig_log.std(dim=1, unbiased=False)
+        sig_r = recon_log.std(dim=1, unbiased=False)
+        sig_or = ((orig_log - mu_o.unsqueeze(1)) * (recon_log - mu_r.unsqueeze(1))).mean(dim=1)
+        ssim = ((2 * mu_o * mu_r + c1) * (2 * sig_or + c2)) / (
+            (mu_o.pow(2) + mu_r.pow(2) + c1) * (sig_o.pow(2) + sig_r.pow(2) + c2)
+        )
+        mean_ssim = torch.clamp(ssim, 0, 1).mean(dim=1)
+        odg = torch.clamp(-4.0 * (1.0 - torch.sqrt(mean_ssim)), min=-4.0, max=0.0)
+    return odg.detach().cpu().numpy().astype(np.float64)
 
 
 def _coerce_metric_score(value):
@@ -1282,24 +1417,50 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
         DataFrame dengan kolom `gap_ms`, `LSD`, `FAD`, dan `PEAQ_ODG`.
     """
     results = []
+    use_gpu_metrics = _eval_device().type == "cuda"
+    if use_gpu_metrics:
+        print(f"  Fast GPU evaluation aktif: LSD/FAD di GPU, PEAQ_ODG backend={EVAL_PEAQ_BACKEND}")
+
     for gap_ms, recon_audios in reconstructed_dict.items():
         print(f"  Evaluating gap {gap_ms}ms...")
 
         # Hitung gap indices (konsisten dengan apply_gap_mask)
         gap_samples = int(round(sr * gap_ms / 1000))
 
-        lsd_scores = []
-        peaq_odg_scores = []
-        for orig, recon in zip(original_audios, recon_audios):
-            center = len(orig) // 2
-            gap_start = center - gap_samples // 2
-            gap_end = gap_start + gap_samples
+        if use_gpu_metrics:
+            try:
+                lsd_scores = compute_lsd_batch_gpu(original_audios, recon_audios, gap_ms, sr)
+                fad_score = compute_fad_gpu(original_audios, recon_audios, sr)
+                if EVAL_PEAQ_BACKEND in {"fast_gpu", "gpu", "nsim"}:
+                    peaq_odg_scores = compute_nsim_odg_batch_gpu(original_audios, recon_audios, sr)
+                else:
+                    peaq_odg_scores = [compute_peaq_odg(orig, recon, sr) for orig, recon in zip(original_audios, recon_audios)]
+            except Exception as exc:
+                print(f"⚠️ Fast GPU evaluation gagal ({exc}); fallback ke CPU metric path.")
+                lsd_scores = []
+                peaq_odg_scores = []
+                for orig, recon in zip(original_audios, recon_audios):
+                    center = len(orig) // 2
+                    gap_start = center - gap_samples // 2
+                    gap_end = gap_start + gap_samples
 
-            lsd_scores.append(compute_lsd(orig, recon, sr,
-                                          gap_start=gap_start, gap_end=gap_end))
-            peaq_odg_scores.append(compute_peaq_odg(orig, recon, sr))
+                    lsd_scores.append(compute_lsd(orig, recon, sr,
+                                                  gap_start=gap_start, gap_end=gap_end))
+                    peaq_odg_scores.append(compute_peaq_odg(orig, recon, sr))
+                fad_score = compute_fad(original_audios, recon_audios, sr)
+        else:
+            lsd_scores = []
+            peaq_odg_scores = []
+            for orig, recon in zip(original_audios, recon_audios):
+                center = len(orig) // 2
+                gap_start = center - gap_samples // 2
+                gap_end = gap_start + gap_samples
 
-        fad_score = compute_fad(original_audios, recon_audios, sr)
+                lsd_scores.append(compute_lsd(orig, recon, sr,
+                                              gap_start=gap_start, gap_end=gap_end))
+                peaq_odg_scores.append(compute_peaq_odg(orig, recon, sr))
+
+            fad_score = compute_fad(original_audios, recon_audios, sr)
 
         results.append({
             "gap_ms": gap_ms,
