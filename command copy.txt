@@ -1,0 +1,17 @@
+python code_it_v2.py --phase all --models baseline_cqtdiff && \
+python code_it_v2.py --phase all --models clap_cqtdiff && \
+python code_it_v2.py --phase all --models clap_maid && \
+python code_it_v2.py --phase all --models audiomae_cqtdiff && \
+python code_it_v2.py --phase all --models audiomae_maid
+
+
+python code_final_run_v2.py --phase all --models baseline_cqtdiff && \
+python code_final_run_v2.py --phase all --models clap_cqtdiff && \
+python code_final_run_v2.py --phase all --models clap_maid && \
+python code_final_run_v2.py --phase all --models audiomae_cqtdiff && \
+python code_final_run_v2.py --phase all --models audiomae_maid
+
+
+ls && \
+ls -la && \
+ls
