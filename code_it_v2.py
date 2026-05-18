@@ -4426,8 +4426,8 @@ else:
         "FAD": {"title": "Frechet Audio Distance (FAD)",
                 "ylabel": "FAD Score",
                 "note": "↓ lebih rendah = lebih baik"},
-        "PEAQ_ODG": {"title": "PEAQ Objective Difference Grade",
-                     "ylabel": "PEAQ_ODG Score",
+        "PEAQ_ODG": {"title": "ViSQOL Objective Difference Grade",
+                     "ylabel": "ViSQOL_ODG Score",
                      "note": "↑ mendekati 0 = lebih baik"},
     }
     metrics_info = {k: v for k, v in metrics_info.items() if k in metric_order}
