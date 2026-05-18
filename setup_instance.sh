@@ -39,7 +39,35 @@ pip uninstall -y torch torchvision torchaudio || true
 pip install torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
 
 echo "==> Installing project requirements"
-pip uninstall -y visqol pyvisqol || true
+pip uninstall -y visqol visqol-python pyvisqol || true
+python - <<'PY'
+import os
+import shutil
+import site
+import glob
+
+for root in site.getsitepackages():
+    paths = [
+        os.path.join(root, "visqol"),
+        os.path.join(root, "pyvisqol"),
+        os.path.join(root, "visqol_lib_py.so"),
+        os.path.join(root, "visqol_config_pb2.py"),
+        os.path.join(root, "similarity_result_pb2.py"),
+    ]
+    for pattern in [
+        os.path.join(root, "visqol-*.dist-info"),
+        os.path.join(root, "visqol_python-*.dist-info"),
+        os.path.join(root, "pyvisqol-*.dist-info"),
+    ]:
+        paths.extend(glob.glob(pattern))
+    for path in paths:
+        if os.path.isdir(path):
+            print("Removing stale ViSQOL directory:", path)
+            shutil.rmtree(path)
+        elif os.path.isfile(path):
+            print("Removing stale ViSQOL file:", path)
+            os.remove(path)
+PY
 pip install -r requirements.txt
 
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
@@ -111,7 +139,14 @@ echo "==> Compile check"
 source env_instance.sh
 python - <<'PY'
 import numpy as np
+import visqol
+from visqol import visqol_lib_py
+from visqol.pb2 import visqol_config_pb2
 from visqol import VisqolApi
+
+print("visqol package:", visqol.__file__)
+print("visqol native:", visqol_lib_py.__file__)
+print("visqol config:", visqol_config_pb2.__file__)
 
 sr = 48000
 t = np.arange(sr, dtype=np.float64) / sr
