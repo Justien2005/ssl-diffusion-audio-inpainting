@@ -117,6 +117,8 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
             nn.LayerNorm(self.feature_dim),
             nn.Linear(self.feature_dim, self.n_mels),
         )
+        self.register_buffer("_hann_window", torch.empty(0), persistent=False)
+        self.register_buffer("_mel_basis", torch.empty(0), persistent=False)
 
         self._load_pretrained_if_available(checkpoint_path)
         self.to(device)
@@ -131,6 +133,25 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
     @property
     def decoder(self):
         return self.diffusion.decoder
+
+    def _get_hann_window(self, device):
+        if self._hann_window.numel() != self.n_fft or self._hann_window.device != device:
+            self._hann_window = torch.hann_window(self.n_fft, device=device)
+        return self._hann_window
+
+    def _get_mel_basis(self, sr, device):
+        expected_shape = (self.n_mels, self.n_fft // 2 + 1)
+        if self._mel_basis.shape != expected_shape or self._mel_basis.device != device:
+            self._mel_basis = torchaudio.functional.melscale_fbanks(
+                n_freqs=self.n_fft // 2 + 1,
+                f_min=0.0,
+                f_max=sr / 2,
+                n_mels=self.n_mels,
+                sample_rate=sr,
+                norm="slaney",
+                mel_scale="slaney",
+            ).to(device=device, dtype=torch.float32).T.contiguous()
+        return self._mel_basis
 
     def _candidate_checkpoints(self, checkpoint_path):
         candidates = [
@@ -190,7 +211,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
             audio = audio.squeeze(1)
 
         with torch.autocast(device_type="cuda" if audio.device.type == "cuda" else "cpu", enabled=False):
-            window = torch.hann_window(self.n_fft, device=audio.device)
+            window = self._get_hann_window(audio.device)
             spec = torch.stft(
                 audio.float(),
                 n_fft=self.n_fft,
@@ -199,15 +220,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
                 return_complex=True,
             )
             power = spec.abs().pow(2)
-            mel_basis = torchaudio.functional.melscale_fbanks(
-                n_freqs=self.n_fft // 2 + 1,
-                f_min=0.0,
-                f_max=sr / 2,
-                n_mels=self.n_mels,
-                sample_rate=sr,
-                norm="slaney",
-                mel_scale="slaney",
-            ).to(audio.device, dtype=torch.float32).T
+            mel_basis = self._get_mel_basis(sr, audio.device)
             mel_power = torch.einsum("mf,bft->bmt", mel_basis, power).clamp_min(1e-10)
             mel_db_raw = 10.0 * torch.log10(mel_power)
             ref_db = mel_db_raw.amax(dim=(1, 2), keepdim=True)

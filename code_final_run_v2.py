@@ -3636,6 +3636,17 @@ def _parse_run_selection():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--phase", "--run-phase", dest="phase", default=os.environ.get("RUN_PHASE", "all"))
     parser.add_argument("--models", "--run-models", dest="models", default=os.environ.get("RUN_MODELS", "all"))
+    parser.add_argument(
+        "--auto-stop",
+        action="store_true",
+        default=os.environ.get("AUTO_STOP_INSTANCE", "").strip().lower() in {"1", "true", "yes", "on"},
+        help="Stop/power off the instance after all selected phase/model targets finish successfully.",
+    )
+    parser.add_argument(
+        "--auto-stop-command",
+        default=os.environ.get("AUTO_STOP_COMMAND", "sudo shutdown -h now"),
+        help="Command used when --auto-stop is enabled. Default: sudo shutdown -h now",
+    )
     args, _ = parser.parse_known_args()
 
     requested_phases = set(_parse_csv_arg(args.phase, ["all"]))
@@ -3654,10 +3665,10 @@ def _parse_run_selection():
     if invalid_models:
         raise ValueError(f"RUN_MODELS/--models tidak dikenali: {invalid_models}. Pilihan: {EXPECTED_MODEL_CONFIGS}")
 
-    return phases, models
+    return phases, models, bool(args.auto_stop), str(args.auto_stop_command).strip()
 
 
-RUN_PHASES, RUN_MODEL_SELECTION = _parse_run_selection()
+RUN_PHASES, RUN_MODEL_SELECTION, AUTO_STOP_INSTANCE, AUTO_STOP_COMMAND = _parse_run_selection()
 
 
 def should_run_train(model_name):
@@ -3675,6 +3686,63 @@ def should_run_summary():
 print("\nRun selection:")
 print(f"   phases: {sorted(RUN_PHASES)}")
 print(f"   models: {sorted(RUN_MODEL_SELECTION)}")
+print(f"   auto_stop: {AUTO_STOP_INSTANCE}")
+
+
+def _summary_artifact_exists():
+    expected = [
+        os.path.join(PATHS["results"], "experiment_summary.json"),
+        os.path.join(PATHS["results"], "experiment_summary.csv"),
+    ]
+    return any(os.path.exists(path) for path in expected)
+
+
+def _missing_selected_run_targets():
+    missing = []
+
+    if "train" in RUN_PHASES:
+        for model_name in sorted(RUN_MODEL_SELECTION):
+            if model_name == "baseline_cqtdiff":
+                ckpt_path = os.path.join(get_model_checkpoint_dir(model_name), f"{model_name}_best.pt")
+            else:
+                ckpt_path = get_model_checkpoint_path(model_name)
+            if not os.path.exists(ckpt_path):
+                missing.append(f"train:{model_name} -> {ckpt_path}")
+
+    if "eval" in RUN_PHASES:
+        for model_name in sorted(RUN_MODEL_SELECTION):
+            result_path = os.path.join(PATHS["results"], f"{model_name}_results.csv")
+            if not os.path.exists(result_path):
+                missing.append(f"eval:{model_name} -> {result_path}")
+
+    if "summary" in RUN_PHASES and not _summary_artifact_exists():
+        missing.append(f"summary -> {os.path.join(PATHS['results'], 'experiment_summary.json')}")
+
+    return missing
+
+
+def maybe_auto_stop_instance():
+    if not AUTO_STOP_INSTANCE:
+        return
+
+    missing = _missing_selected_run_targets()
+    if missing:
+        print("\nAuto-stop diminta, tapi target run yang dipilih belum lengkap. Instance tidak dimatikan.")
+        for item in missing:
+            print(f"  - missing {item}")
+        return
+
+    if not AUTO_STOP_COMMAND:
+        print("\nAuto-stop diminta, tapi AUTO_STOP_COMMAND kosong. Instance tidak dimatikan.")
+        return
+
+    print(f"\nAuto-stop: semua target phase/model terpilih selesai. Menjalankan: {AUTO_STOP_COMMAND}")
+    try:
+        import shlex
+        import subprocess
+        subprocess.Popen(shlex.split(AUTO_STOP_COMMAND))
+    except Exception as exc:
+        print(f"Auto-stop gagal dijalankan: {exc}")
 
 
 # ---
@@ -4550,3 +4618,6 @@ else:
     summary_df = update_experiment_summary()
     print(f"\n✅ Semua hasil tersimpan di: {PATHS['results']}")
     print(f"Plots tersimpan di: {PATHS['plots']}")
+
+
+maybe_auto_stop_instance()
