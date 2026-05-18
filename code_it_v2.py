@@ -967,8 +967,8 @@ import pandas as pd
 from scipy.linalg import sqrtm
 
 _VISQOL_FALLBACK_WARNED = False
-EVAL_USE_GPU = os.environ.get("EVAL_USE_GPU", "1").strip().lower() not in {"0", "false", "no", "off"}
-EVAL_VISQOL_BACKEND = os.environ.get("EVAL_VISQOL_BACKEND", "fast_gpu").strip().lower()
+EVAL_USE_GPU = False
+EVAL_VISQOL_BACKEND = "visqol"
 
 
 def compute_lsd(original: np.ndarray, reconstructed: np.ndarray,
