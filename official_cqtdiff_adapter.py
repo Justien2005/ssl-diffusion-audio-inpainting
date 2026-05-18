@@ -133,16 +133,15 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         self.sigma = float(os.environ.get("CQTDIFF_ADAPTER_SIGMA", "0.1"))
 
         self.feature_encoder = nn.Sequential(
-            nn.Linear(self.freq_bins + 1, 512),
+            nn.Linear(self.freq_bins * 2 + 1, 512),
             nn.SiLU(),
             nn.Linear(512, self.feature_dim),
             nn.SiLU(),
         )
-        self.mag_decoder = nn.Sequential(
+        self.spec_decoder = nn.Sequential(
             nn.Linear(self.feature_dim, 512),
             nn.SiLU(),
-            nn.Linear(512, self.freq_bins),
-            nn.ReLU(),
+            nn.Linear(512, self.freq_bins * 2),
         )
 
     def _pad_or_crop(self, x, length):
@@ -210,15 +209,21 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
                 window=window,
                 return_complex=True,
             )
-            mag = spec.abs().permute(0, 2, 1)
+            spec_ri = torch.view_as_real(spec).permute(0, 2, 1, 3).contiguous()
+            spec_features = spec_ri.reshape(spec.shape[0], spec.shape[2], self.freq_bins * 2)
             if mask is None:
-                frame_mask = torch.zeros(mag.shape[0], mag.shape[1], device=mag.device, dtype=mag.dtype)
+                frame_mask = torch.zeros(
+                    spec_features.shape[0],
+                    spec_features.shape[1],
+                    device=spec_features.device,
+                    dtype=spec_features.dtype,
+                )
             else:
-                frame_mask = self._sample_to_frame_mask(mask, mag.shape[1]).to(mag.dtype)
-            return self.feature_encoder(torch.cat([mag, frame_mask.unsqueeze(-1)], dim=-1).float())
+                frame_mask = self._sample_to_frame_mask(mask, spec_features.shape[1]).to(spec_features.dtype)
+            return self.feature_encoder(torch.cat([spec_features, frame_mask.unsqueeze(-1)], dim=-1).float())
 
     def decode_features(self, features):
-        return self.mag_decoder(features)
+        return self.spec_decoder(features)
 
     def forward(self, x, mask=None, conditioning=None):
         features = self.get_features(x, mask)
@@ -242,19 +247,16 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             if conditioning.dim() == 2:
                 conditioning = conditioning.unsqueeze(1)
             features = features + conditioning
-        pred_mag = self.decode_features(features).permute(0, 2, 1)
+        pred_spec_features = self.decode_features(features).permute(0, 2, 1).contiguous()
 
         device_type = self.device_ref.type
         with torch.autocast(device_type=device_type, enabled=False):
+            bsz, _, n_frames = pred_spec_features.shape
+            pred_pairs = pred_spec_features.float().reshape(
+                bsz, self.freq_bins, 2, n_frames
+            ).permute(0, 1, 3, 2).contiguous()
+            recon_spec = torch.view_as_complex(pred_pairs)
             window = torch.hann_window(self.n_fft, device=masked_audio.device)
-            input_spec = torch.stft(
-                masked_audio.float(),
-                n_fft=self.n_fft,
-                hop_length=self.hop_length,
-                window=window,
-                return_complex=True,
-            )
-            recon_spec = pred_mag.float() * torch.exp(1j * torch.angle(input_spec))
             reconstructed = torch.istft(
                 recon_spec,
                 n_fft=self.n_fft,

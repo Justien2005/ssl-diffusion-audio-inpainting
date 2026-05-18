@@ -14,7 +14,7 @@
 # | 2 | Mount Google Drive & setup folder |
 # | 3 | Download & Preprocessing MusicNet |
 # | 4 | Definisi FiLM Layer (improved init) |
-# | 5 | Definisi Fungsi Evaluasi (LSD gap-restricted dB, FAD, PEAQ_ODG) |
+# | 5 | Definisi Fungsi Evaluasi (LSD gap-restricted dB, FAD, VISQOL_ODG) |
 # | 6 | Helper functions (memory management, checkpoint, group-aware split) |
 # | 6.5 | Dataset, DataLoader & Shared Utilities (mask, crossfade) |
 # | 6.6 | Training Loop (Reconstruction-based + CFG dropout) |
@@ -139,8 +139,8 @@ packages = [
     # "numpy",         # Operasi array numerik
     # "resampy",       # Resampling audio berkualitas tinggi
     # "torchvggish",   # VGGish embeddings untuk FAD legacy
-    # "git+https://github.com/ashvala/AQUA-tk.git",  # AquaTK PEAQb untuk evaluasi PEAQ
-    # "visqol-lib-py", # Fallback perceptual quality metric jika PEAQb tidak tersedia
+    # "git+https://github.com/ashvala/AQUA-tk.git",  # Legacy perceptual package, tidak dipakai untuk metrik final
+    # "visqol-lib-py", # ViSQOL perceptual quality metric
 ]
 
 for pkg in packages:
@@ -455,7 +455,7 @@ SKIP_IF_EXISTS = False
 # Seed tetap untuk semua sampling dataset agar eksperimen reproducible
 DATASET_RANDOM_SEED = 42
 
-# Sample rate target: MusicNet native/CD quality, dibutuhkan PEAQ (44.1/48kHz)
+# Sample rate target: MusicNet native/CD quality, cocok untuk ViSQOL (44.1/48kHz)
 TARGET_SR = 44100
 
 # Panjang segmen audio (4 detik = cukup untuk gap 1700ms + konteks)
@@ -681,7 +681,7 @@ def preprocess_audio(audio_path):
 
     Menggunakan RMS normalization alih-alih peak normalization
     agar dynamic range antar segmen tetap terjaga — penting untuk
-    PEAQ yang sensitif terhadap loudness statistics.
+    ViSQOL yang sensitif terhadap loudness statistics.
     """
     audio, sr = librosa.load(audio_path, sr=TARGET_SR, mono=True)
     rms = np.sqrt(np.mean(audio ** 2))
@@ -937,7 +937,7 @@ for combo, cfg in FILM_CONFIGS.items():
 print("   baseline_cqtdiff: tidak menggunakan FiLM")
 
 # ---
-# ## CELL 5 — Fungsi Evaluasi (LSD, FAD, PEAQ_ODG)
+# ## CELL 5 — Fungsi Evaluasi (LSD, FAD, VISQOL_ODG)
 
 
 # ============================================================
@@ -955,7 +955,7 @@ print("   baseline_cqtdiff: tidak menggunakan FiLM")
 #    - Lebih rendah = lebih baik
 #    - Dihitung per set, bukan per sample
 #
-# 3. PEAQ_ODG (Perceptual Evaluation of Audio Quality)
+# 3. VISQOL_ODG (ViSQOL Objective Difference Grade)
 #    - Mengukur kualitas perseptual berdasarkan reference vs degraded audio
 #    - Skala ODG-like: 0 (imperceptible) hingga -4 (sangat buruk)
 #    - Lebih tinggi (mendekati 0) = lebih baik
@@ -966,9 +966,9 @@ import librosa
 import pandas as pd
 from scipy.linalg import sqrtm
 
-_PEAQ_FALLBACK_WARNED = False
+_VISQOL_FALLBACK_WARNED = False
 EVAL_USE_GPU = os.environ.get("EVAL_USE_GPU", "1").strip().lower() not in {"0", "false", "no", "off"}
-EVAL_PEAQ_BACKEND = os.environ.get("EVAL_PEAQ_BACKEND", "fast_gpu").strip().lower()
+EVAL_VISQOL_BACKEND = os.environ.get("EVAL_VISQOL_BACKEND", "fast_gpu").strip().lower()
 
 
 def compute_lsd(original: np.ndarray, reconstructed: np.ndarray,
@@ -1003,9 +1003,8 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
     """
     Ekstrak fitur untuk Frechet Audio Distance.
 
-    Primary path menggunakan VGGish embeddings (legacy FAD pipeline).
-    Jika VGGish tidak tersedia di runtime, fallback ke mean log-mel
-    statistics 128-dimensi agar evaluasi tetap bisa berjalan.
+    FAD selalu menggunakan VGGish embeddings di CPU agar skala metrik konsisten
+    dengan pipeline FAD legacy. Tidak ada fallback log-mel untuk FAD.
     """
     features = []
     try:
@@ -1033,17 +1032,9 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
                 emb = _vggish(examples)
                 features.append(emb.mean(0).detach().cpu().numpy())
     except Exception as exc:
-        print(f"⚠️ VGGish FAD tidak tersedia/kompatibel ({exc}); fallback ke log-mel FAD features.")
-        for audio in audio_list:
-            mel = librosa.feature.melspectrogram(
-                y=np.asarray(audio, dtype=np.float32),
-                sr=sr,
-                n_mels=128,
-                n_fft=2048,
-                hop_length=512,
-            )
-            mel_db = librosa.power_to_db(mel, ref=np.max)
-            features.append(np.mean(mel_db, axis=1))
+        raise RuntimeError(
+            "FAD wajib memakai VGGish CPU. Install/konfigurasi torchvggish sebelum evaluasi FAD."
+        ) from exc
 
     return np.asarray(features, dtype=np.float64)
 
@@ -1052,8 +1043,9 @@ def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TAR
     """
     Hitung Frechet Audio Distance (FAD) sebagai metrik distribusional per-set.
 
-    FAD tetap terpisah dari PEAQ: FAD menjawab kemiripan distribusi embedding,
-    sedangkan PEAQ_ODG menjawab kualitas perseptual per pasangan audio.
+    FAD tetap terpisah dari VISQOL_ODG: FAD menjawab kemiripan distribusi
+    embedding VGGish, sedangkan VISQOL_ODG menjawab kualitas perseptual per
+    pasangan audio.
     """
     orig_features = extract_fad_features(original_audios, sr)
     recon_features = extract_fad_features(reconstructed_audios, sr)
@@ -1156,33 +1148,12 @@ def compute_lsd_batch_gpu(original_audios, reconstructed_audios, gap_ms, sr=TARG
 
 
 def extract_fad_features_gpu(audio_list, sr=TARGET_SR):
-    device = _eval_device()
-    if device.type != "cuda":
-        raise RuntimeError("GPU tidak tersedia untuk extract_fad_features_gpu")
-    audio, _ = _stack_audio_gpu(audio_list, device)
-    with __import__("torch").inference_mode():
-        mel_db = _torch_logmel(audio, sr)
-        features = mel_db.mean(dim=-1)
-    return features.detach().cpu().numpy().astype(np.float64)
+    raise RuntimeError("FAD tidak memakai fitur GPU/log-mel; gunakan VGGish CPU via extract_fad_features().")
 
 
 def compute_fad_gpu(original_audios, reconstructed_audios, sr=TARGET_SR):
-    orig_features = extract_fad_features_gpu(original_audios, sr)
-    recon_features = extract_fad_features_gpu(reconstructed_audios, sr)
-
-    mu1 = np.mean(orig_features, axis=0)
-    mu2 = np.mean(recon_features, axis=0)
-    d = orig_features.shape[1]
-    if len(orig_features) < 2 or len(recon_features) < 2:
-        return float(np.sum((mu1 - mu2) ** 2))
-
-    sigma1 = np.cov(orig_features, rowvar=False) + 1e-6 * np.eye(d)
-    sigma2 = np.cov(recon_features, rowvar=False) + 1e-6 * np.eye(d)
-    diff = mu1 - mu2
-    covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
-    if np.iscomplexobj(covmean):
-        covmean = covmean.real
-    return float(np.real(np.dot(diff, diff) + np.trace(sigma1 + sigma2 - 2 * covmean)))
+    """Backward-compatible wrapper: FAD tetap dihitung dengan VGGish di CPU."""
+    return compute_fad(original_audios, reconstructed_audios, sr)
 
 
 def compute_nsim_odg_batch_gpu(original_audios, reconstructed_audios, sr=TARGET_SR):
@@ -1215,95 +1186,6 @@ def compute_nsim_odg_batch_gpu(original_audios, reconstructed_audios, sr=TARGET_
         mean_ssim = torch.clamp(ssim, 0, 1).mean(dim=1)
         odg = torch.clamp(-4.0 * (1.0 - torch.sqrt(mean_ssim)), min=-4.0, max=0.0)
     return odg.detach().cpu().numpy().astype(np.float64)
-
-
-def _coerce_metric_score(value):
-    """Ambil scalar score dari return value metric yang mungkin dict/tuple/array."""
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        for key in ["odg", "ODG", "peaq", "PEAQ", "score", "value"]:
-            if key in value:
-                return _coerce_metric_score(value[key])
-        return None
-    if hasattr(value, "odg"):
-        return _coerce_metric_score(value.odg)
-    if hasattr(value, "score"):
-        return _coerce_metric_score(value.score)
-    try:
-        arr = np.asarray(value, dtype=float).reshape(-1)
-        if arr.size > 0 and np.isfinite(arr[0]):
-            return float(arr[0])
-    except Exception:
-        return None
-    return None
-
-
-def _try_call_metric(metric, original, reconstructed, sr):
-    """Coba beberapa signature umum untuk fungsi/class metric audio."""
-    call_attempts = [
-        lambda obj: obj(original, reconstructed, sr),
-        lambda obj: obj(original, reconstructed, sample_rate=sr),
-        lambda obj: obj(original, reconstructed, fs=sr),
-        lambda obj: obj(reference=original, degraded=reconstructed, sample_rate=sr),
-        lambda obj: obj(ref=original, deg=reconstructed, fs=sr),
-    ]
-
-    for call in call_attempts:
-        try:
-            score = _coerce_metric_score(call(metric))
-            if score is not None:
-                return score
-        except Exception:
-            continue
-    return None
-
-
-def _try_aquatk_peaqb(original, reconstructed, sr):
-    """
-    Primary path: AquaTK Basic PEAQ (PEAQb).
-    Dibuat defensif karena AquaTK masih in-development dan API dapat berubah.
-    """
-    import importlib
-    import inspect
-
-    candidates = [
-        ("aquatk.metrics", "PEAQb"),
-        ("aquatk.metrics", "PEAQ"),
-        ("aquatk.metrics.peaqb", "PEAQb"),
-        ("aquatk.metrics.peaq", "PEAQb"),
-        ("aquatk.metrics.peaq", "PEAQ"),
-        ("aquatk", "PEAQb"),
-    ]
-
-    for module_name, attr_name in candidates:
-        try:
-            module = importlib.import_module(module_name)
-            metric_ctor = getattr(module, attr_name)
-        except Exception:
-            continue
-
-        if inspect.isclass(metric_ctor):
-            instances = []
-            for kwargs in [{"sample_rate": sr}, {"sr": sr}, {"fs": sr}, {}]:
-                try:
-                    instances.append(metric_ctor(**kwargs))
-                except Exception:
-                    continue
-            for metric in instances:
-                for method_name in ["compute", "score", "evaluate", "__call__"]:
-                    method = getattr(metric, method_name, None)
-                    if method is None:
-                        continue
-                    score = _try_call_metric(method, original, reconstructed, sr)
-                    if score is not None:
-                        return score
-        else:
-            score = _try_call_metric(metric_ctor, original, reconstructed, sr)
-            if score is not None:
-                return score
-
-    return None
 
 
 def _moslqo_to_odg(moslqo):
@@ -1364,49 +1246,38 @@ def _compute_nsim_odg(original, reconstructed, sr):
     return float(np.clip(odg, -4.0, 0.0))
 
 
-def compute_peaq_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int = TARGET_SR):
+def compute_visqol_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int = TARGET_SR):
     """
-    Hitung PEAQ perceptual quality sebagai Objective Difference Grade-like score.
+    Hitung ViSQOL perceptual quality sebagai Objective Difference Grade-like score.
 
-    Primary path memakai AquaTK PEAQb (Basic PEAQ) jika package tersedia.
-    Jika PEAQb tidak tersedia di runtime, fallback ke ViSQOL music mode,
-    lalu fallback terakhir ke NSIM log-mel agar evaluasi tetap bisa berjalan.
+    Primary path memakai ViSQOL audio mode. Fallback terakhir adalah NSIM
+    log-mel yang dipetakan ke ODG-like scale agar evaluasi tetap bisa berjalan.
     """
-    global _PEAQ_FALLBACK_WARNED
+    global _VISQOL_FALLBACK_WARNED
 
     min_len = min(len(original), len(reconstructed))
     original = np.asarray(original[:min_len], dtype=np.float64)
     reconstructed = np.asarray(reconstructed[:min_len], dtype=np.float64)
 
-    # PEAQ dirancang untuk 44.1/48kHz; target pipeline sekarang 44.1kHz.
-    peaq_sr = sr
-    if peaq_sr not in (44100, 48000):
+    visqol_sr = sr
+    if visqol_sr not in (44100, 48000):
         original = librosa.resample(original, orig_sr=sr, target_sr=44100)
         reconstructed = librosa.resample(reconstructed, orig_sr=sr, target_sr=44100)
-        peaq_sr = 44100
+        visqol_sr = 44100
 
     try:
-        score = _try_aquatk_peaqb(original, reconstructed, peaq_sr)
-        if score is not None and np.isfinite(score):
-            return float(np.clip(score, -4.0, 0.0))
-    except Exception:
-        pass
-
-    if not _PEAQ_FALLBACK_WARNED:
-        print("⚠️ AquaTK PEAQb tidak tersedia/kompatibel; fallback ke ViSQOL/NSIM untuk PEAQ_ODG.")
-        _PEAQ_FALLBACK_WARNED = True
-
-    try:
-        print("fallback ke visqol")
-        return _compute_visqol_odg(original, reconstructed, peaq_sr)
+        return _compute_visqol_odg(original, reconstructed, visqol_sr)
     except Exception as exc:
-        print(f"⚠️ ViSQOL fallback gagal: {exc}; fallback ke nsim")
-        return _compute_nsim_odg(original, reconstructed, peaq_sr)
+        if not _VISQOL_FALLBACK_WARNED:
+            print(f"⚠️ ViSQOL gagal ({exc}); fallback ke NSIM untuk VISQOL_ODG.")
+            _VISQOL_FALLBACK_WARNED = True
+        return _compute_nsim_odg(original, reconstructed, visqol_sr)
 
 
 # Backward-compatible aliases.
-compute_peaq = compute_peaq_odg
-compute_odg = compute_peaq_odg
+compute_peaq_odg = compute_visqol_odg
+compute_peaq = compute_visqol_odg
+compute_odg = compute_visqol_odg
 
 
 def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int = TARGET_SR):
@@ -1414,31 +1285,31 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
     Evaluasi semua gap duration untuk satu model.
 
     Returns:
-        DataFrame dengan kolom `gap_ms`, `LSD`, `FAD`, dan `PEAQ_ODG`.
+        DataFrame dengan kolom `gap_ms`, `LSD`, `FAD`, dan `VISQOL_ODG`.
     """
     results = []
     use_gpu_metrics = _eval_device().type == "cuda"
     if use_gpu_metrics:
-        print(f"  Fast GPU evaluation aktif: LSD/FAD di GPU, PEAQ_ODG backend={EVAL_PEAQ_BACKEND}")
+        print(f"  Fast GPU evaluation aktif: LSD/VISQOL backend GPU, FAD tetap VGGish CPU, VISQOL_ODG backend={EVAL_VISQOL_BACKEND}")
 
     for gap_ms, recon_audios in reconstructed_dict.items():
         print(f"  Evaluating gap {gap_ms}ms...")
 
         # Hitung gap indices (konsisten dengan apply_gap_mask)
         gap_samples = int(round(sr * gap_ms / 1000))
+        fad_score = compute_fad(original_audios, recon_audios, sr)
 
         if use_gpu_metrics:
             try:
                 lsd_scores = compute_lsd_batch_gpu(original_audios, recon_audios, gap_ms, sr)
-                fad_score = compute_fad_gpu(original_audios, recon_audios, sr)
-                if EVAL_PEAQ_BACKEND in {"fast_gpu", "gpu", "nsim"}:
-                    peaq_odg_scores = compute_nsim_odg_batch_gpu(original_audios, recon_audios, sr)
+                if EVAL_VISQOL_BACKEND in {"fast_gpu", "gpu", "nsim"}:
+                    visqol_odg_scores = compute_nsim_odg_batch_gpu(original_audios, recon_audios, sr)
                 else:
-                    peaq_odg_scores = [compute_peaq_odg(orig, recon, sr) for orig, recon in zip(original_audios, recon_audios)]
+                    visqol_odg_scores = [compute_visqol_odg(orig, recon, sr) for orig, recon in zip(original_audios, recon_audios)]
             except Exception as exc:
                 print(f"⚠️ Fast GPU evaluation gagal ({exc}); fallback ke CPU metric path.")
                 lsd_scores = []
-                peaq_odg_scores = []
+                visqol_odg_scores = []
                 for orig, recon in zip(original_audios, recon_audios):
                     center = len(orig) // 2
                     gap_start = center - gap_samples // 2
@@ -1446,11 +1317,10 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
 
                     lsd_scores.append(compute_lsd(orig, recon, sr,
                                                   gap_start=gap_start, gap_end=gap_end))
-                    peaq_odg_scores.append(compute_peaq_odg(orig, recon, sr))
-                fad_score = compute_fad(original_audios, recon_audios, sr)
+                    visqol_odg_scores.append(compute_visqol_odg(orig, recon, sr))
         else:
             lsd_scores = []
-            peaq_odg_scores = []
+            visqol_odg_scores = []
             for orig, recon in zip(original_audios, recon_audios):
                 center = len(orig) // 2
                 gap_start = center - gap_samples // 2
@@ -1458,21 +1328,19 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
 
                 lsd_scores.append(compute_lsd(orig, recon, sr,
                                               gap_start=gap_start, gap_end=gap_end))
-                peaq_odg_scores.append(compute_peaq_odg(orig, recon, sr))
-
-            fad_score = compute_fad(original_audios, recon_audios, sr)
+                visqol_odg_scores.append(compute_visqol_odg(orig, recon, sr))
 
         results.append({
             "gap_ms": gap_ms,
             "LSD": round(np.mean(lsd_scores), 4),
             "FAD": round(fad_score, 4),
-            "PEAQ_ODG": round(np.mean(peaq_odg_scores), 4),
+            "VISQOL_ODG": round(np.mean(visqol_odg_scores), 4),
         })
 
     return pd.DataFrame(results)
 
 
-print("✅ Fungsi evaluasi (LSD, FAD, PEAQ_ODG) berhasil didefinisikan!")
+print("✅ Fungsi evaluasi (LSD, FAD, VISQOL_ODG) berhasil didefinisikan!")
 
 # ---
 # ## CELL 6 — Helper Functions
@@ -1735,7 +1603,7 @@ def update_experiment_summary():
             "checkpoint_path": None,
             "final_LSD_mean": None,
             "final_FAD_mean": None,
-            "final_PEAQ_ODG_mean": None,
+            "final_VISQOL_ODG_mean": None,
             "status": "pending",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -1765,7 +1633,7 @@ def update_experiment_summary():
         if not results_df.empty and "model" in results_df.columns:
             r = results_df[results_df["model"] == model_name]
             if not r.empty:
-                for metric in ["LSD", "FAD", "PEAQ_ODG"]:
+                for metric in ["LSD", "FAD", "VISQOL_ODG"]:
                     if metric in r.columns:
                         row[f"final_{metric}_mean"] = safe_float(r[metric].mean())
                 row["status"] = "evaluated"
@@ -2372,12 +2240,12 @@ print(f"   CPU thread env limit: {CPU_THREAD_LIMIT}")
 # model dilatih memprediksi noise, tapi output-nya dipakai sebagai rekonstruksi.
 # 
 # Versi baru ini memakai **reconstruction loss di STFT domain**:
-# - Training: prediksi STFT magnitude clean audio, loss pada gap frames
-# - Inference: prediksi STFT magnitude → iSTFT → replace gap region
+# - Training: prediksi complex STFT clean audio (real+imag), loss pada gap frames
+# - Inference: prediksi complex STFT → iSTFT → replace gap region
 # - Training dan inference **fully aligned**
 # 
 # Fitur:
-# - Gap-only reconstruction loss (L1 pada STFT magnitude di gap region)
+# - Gap-only reconstruction loss (L1 pada complex STFT real+imag di gap region)
 # - Full audio auxiliary loss (0.1x bobot, buat stabilitas)
 # - Classifier-free guidance dropout (CFG)
 # - Mixed precision training (AMP) + gradient clipping
@@ -2393,7 +2261,7 @@ print(f"   CPU thread env limit: {CPU_THREAD_LIMIT}")
 # - Training loop tetap memakai objective rekonstruksi yang diharapkan
 #   disediakan oleh adapter decoder asli.
 # - Training dan inference sekarang ALIGNED:
-#   training prediksi STFT magnitude clean, inference juga
+#   training prediksi complex STFT clean, inference juga
 # - Loss dihitung pada gap region only (spectral domain)
 # - CFG dropout tetap dipertahankan
 # ============================================================
@@ -2409,13 +2277,14 @@ import time
 
 
 def compute_stft_target(clean_audio, n_fft=2048, hop_length=512):
-    """Hitung STFT magnitude target dari clean audio."""
+    """Hitung target complex STFT real+imag dari clean audio."""
     window = _get_hann_window(n_fft, clean_audio.device)
     spec = torch.stft(
         clean_audio, n_fft=n_fft, hop_length=hop_length, window=window,
         return_complex=True
     )
-    return spec.abs()  # (B, F, T)
+    spec_ri = torch.view_as_real(spec).permute(0, 1, 3, 2).contiguous()
+    return spec_ri.reshape(spec.shape[0], spec.shape[1] * 2, spec.shape[2])  # (B, 2F, T)
 
 
 def compute_frame_mask(sample_mask, n_frames, hop_length=512):
@@ -2544,16 +2413,16 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler.is_enabled()):
         features = decoder.get_features(masked, mask)
         cond_features = film(z.float(), features)
-        pred_mag = decoder.decode_features(cond_features)
-        target_mag = compute_stft_target(clean).permute(0, 2, 1)
+        pred_spec = decoder.decode_features(cond_features)
+        target_spec = compute_stft_target(clean).permute(0, 2, 1)
 
-        T_min = min(pred_mag.shape[1], target_mag.shape[1])
-        pred_mag = pred_mag[:, :T_min, :]
-        target_mag = target_mag[:, :T_min, :]
+        T_min = min(pred_spec.shape[1], target_spec.shape[1])
+        pred_spec = pred_spec[:, :T_min, :]
+        target_spec = target_spec[:, :T_min, :]
 
-        frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_mag)
-        gap_loss = F.l1_loss(pred_mag[frame_mask], target_mag[frame_mask])
-        full_loss = F.l1_loss(pred_mag, target_mag)
+        frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
+        gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+        full_loss = F.l1_loss(pred_spec, target_spec)
         loss = gap_loss + 0.1 * full_loss
 
     optimizer.zero_grad(set_to_none=True)
@@ -2595,16 +2464,16 @@ def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profil
     t_gpu = time.perf_counter()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler.is_enabled()):
         features = decoder.get_features(masked, mask)
-        pred_mag = decoder.decode_features(features)
-        target_mag = compute_stft_target(clean).permute(0, 2, 1)
+        pred_spec = decoder.decode_features(features)
+        target_spec = compute_stft_target(clean).permute(0, 2, 1)
 
-        T_min = min(pred_mag.shape[1], target_mag.shape[1])
-        pred_mag = pred_mag[:, :T_min, :]
-        target_mag = target_mag[:, :T_min, :]
+        T_min = min(pred_spec.shape[1], target_spec.shape[1])
+        pred_spec = pred_spec[:, :T_min, :]
+        target_spec = target_spec[:, :T_min, :]
 
-        frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_mag)
-        gap_loss = F.l1_loss(pred_mag[frame_mask], target_mag[frame_mask])
-        full_loss = F.l1_loss(pred_mag, target_mag)
+        frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
+        gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+        full_loss = F.l1_loss(pred_spec, target_spec)
         loss = gap_loss + 0.1 * full_loss
 
     optimizer.zero_grad(set_to_none=True)
@@ -2926,15 +2795,15 @@ def validate_model(decoder, encoder_fn, film, val_loader, device):
             z = cached_z.to(device, non_blocking=True) if cached_z is not None else encoder_fn(masked)
             features = decoder.get_features(masked, mask)
             cond_features = film(z.float(), features)
-            pred_mag = decoder.decode_features(cond_features)
+            pred_spec = decoder.decode_features(cond_features)
 
-            target_mag = compute_stft_target(clean).permute(0, 2, 1)
-            T_min = min(pred_mag.shape[1], target_mag.shape[1])
-            pred_mag = pred_mag[:, :T_min, :]
-            target_mag = target_mag[:, :T_min, :]
+            target_spec = compute_stft_target(clean).permute(0, 2, 1)
+            T_min = min(pred_spec.shape[1], target_spec.shape[1])
+            pred_spec = pred_spec[:, :T_min, :]
+            target_spec = target_spec[:, :T_min, :]
 
-            frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_mag)
-            val_loss = F.l1_loss(pred_mag[frame_mask], target_mag[frame_mask])
+            frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
+            val_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
             val_losses.append(val_loss.item())
 
     return float(np.mean(val_losses))
@@ -2952,15 +2821,15 @@ def validate_baseline(decoder, val_loader, device):
             mask = batch["mask"].to(device, non_blocking=True)
 
             features = decoder.get_features(masked, mask)
-            pred_mag = decoder.decode_features(features)
+            pred_spec = decoder.decode_features(features)
 
-            target_mag = compute_stft_target(clean).permute(0, 2, 1)
-            T_min = min(pred_mag.shape[1], target_mag.shape[1])
-            pred_mag = pred_mag[:, :T_min, :]
-            target_mag = target_mag[:, :T_min, :]
+            target_spec = compute_stft_target(clean).permute(0, 2, 1)
+            T_min = min(pred_spec.shape[1], target_spec.shape[1])
+            pred_spec = pred_spec[:, :T_min, :]
+            target_spec = target_spec[:, :T_min, :]
 
-            frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_mag)
-            val_loss = F.l1_loss(pred_mag[frame_mask], target_mag[frame_mask])
+            frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
+            val_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
             val_losses.append(val_loss.item())
 
     return float(np.mean(val_losses))
@@ -4619,11 +4488,13 @@ else:
     all_results = pd.read_csv(master_path)
 
     # Backward compatibility untuk file hasil lama.
-    if "PEAQ_ODG" not in all_results.columns:
-        if "PEAQ" in all_results.columns:
-            all_results["PEAQ_ODG"] = all_results["PEAQ"]
+    if "VISQOL_ODG" not in all_results.columns:
+        if "PEAQ_ODG" in all_results.columns:
+            all_results["VISQOL_ODG"] = all_results["PEAQ_ODG"]
+        elif "PEAQ" in all_results.columns:
+            all_results["VISQOL_ODG"] = all_results["PEAQ"]
         elif "ODG" in all_results.columns:
-            all_results["PEAQ_ODG"] = all_results["ODG"]
+            all_results["VISQOL_ODG"] = all_results["ODG"]
 
     # Cek model mana yang sudah selesai
     available_models = all_results["model"].unique()
@@ -4638,7 +4509,7 @@ else:
     print("TABEL PERBANDINGAN LENGKAP")
     print("="*70)
 
-    metric_order = [m for m in ["LSD", "FAD", "PEAQ_ODG"] if m in all_results.columns]
+    metric_order = [m for m in ["LSD", "FAD", "VISQOL_ODG"] if m in all_results.columns]
     for metric in metric_order:
         if metric in ["LSD", "FAD"]:
             direction = "↓ lebih rendah = lebih baik"
@@ -4678,9 +4549,9 @@ else:
         "FAD": {"title": "Frechet Audio Distance (FAD)",
                 "ylabel": "FAD Score",
                 "note": "↓ lebih rendah = lebih baik"},
-        "PEAQ_ODG": {"title": "ViSQOL Objective Difference Grade",
-                     "ylabel": "ViSQOL_ODG Score",
-                     "note": "↑ mendekati 0 = lebih baik"},
+        "VISQOL_ODG": {"title": "ViSQOL Objective Difference Grade",
+                       "ylabel": "VISQOL_ODG Score",
+                       "note": "↑ mendekati 0 = lebih baik"},
     }
     metrics_info = {k: v for k, v in metrics_info.items() if k in metric_order}
 
@@ -4754,8 +4625,8 @@ else:
             header_cols = ["Model", "ΔLSD"]
             if "FAD" in all_results.columns:
                 header_cols.append("ΔFAD")
-            if "PEAQ_ODG" in all_results.columns:
-                header_cols.append("ΔPEAQ_ODG")
+            if "VISQOL_ODG" in all_results.columns:
+                header_cols.append("ΔVISQOL_ODG")
             print(f"  {header_cols[0]:<25} " + " ".join(f"{h:>10}" for h in header_cols[1:]))
             print(f"  {'-'*65}")
 
@@ -4771,8 +4642,8 @@ else:
                 deltas = [bl["LSD"] - hybrid["LSD"]]
                 if "FAD" in all_results.columns:
                     deltas.append(bl["FAD"] - hybrid["FAD"])
-                if "PEAQ_ODG" in all_results.columns:
-                    deltas.append(hybrid["PEAQ_ODG"] - bl["PEAQ_ODG"])
+                if "VISQOL_ODG" in all_results.columns:
+                    deltas.append(hybrid["VISQOL_ODG"] - bl["VISQOL_ODG"])
 
                 print(f"  {model_name:<25} " + " ".join(f"{d:>+10.4f}" for d in deltas))
 
