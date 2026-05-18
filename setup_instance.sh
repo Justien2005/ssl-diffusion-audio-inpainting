@@ -140,13 +140,9 @@ source env_instance.sh
 python - <<'PY'
 import numpy as np
 import visqol
-from visqol import visqol_lib_py
-from visqol.pb2 import visqol_config_pb2
 from visqol import VisqolApi
 
 print("visqol package:", visqol.__file__)
-print("visqol native:", visqol_lib_py.__file__)
-print("visqol config:", visqol_config_pb2.__file__)
 
 sr = 48000
 t = np.arange(sr, dtype=np.float64) / sr

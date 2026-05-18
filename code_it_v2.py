@@ -1178,8 +1178,6 @@ def _moslqo_to_odg(moslqo):
 def _compute_visqol_python_odg(original, reconstructed, sr):
     """ViSQOL fallback via visqol-python pure Python API."""
     import visqol
-    from visqol import visqol_lib_py
-    from visqol.pb2 import visqol_config_pb2
     from visqol import VisqolApi
 
     orig_48k = librosa.resample(original, orig_sr=sr, target_sr=48000).astype(np.float64)
@@ -1194,9 +1192,7 @@ def _compute_visqol_python_odg(original, reconstructed, sr):
     except Exception as exc:
         raise RuntimeError(
             "visqol-python gagal. Kemungkinan ada stale/mixed ViSQOL files di venv. "
-            f"visqol={getattr(visqol, '__file__', None)} | "
-            f"native={getattr(visqol_lib_py, '__file__', None)} | "
-            f"config={getattr(visqol_config_pb2, '__file__', None)}"
+            f"visqol={getattr(visqol, '__file__', None)}"
         ) from exc
     return _moslqo_to_odg(result.moslqo)
 

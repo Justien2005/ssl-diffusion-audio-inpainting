@@ -7,8 +7,10 @@ apt update
 
 cd /workspace
 
-git clone https://github.com/Justien2005/ssl-diffusion-audio-inpainting.git thesisall
-cd thesisall
+git clone https://github.com/Justien2005/ssl-diffusion-audio-inpainting.git
+cd ssl-diffusion-audio-inpainting
+
+git checkout new-v1
 
 # Buat environment, install dependency, clone external repo jika belum ada,
 # download CQT-Diff+ weights, dan download AudioMAE checkpoint dari Google Drive.
