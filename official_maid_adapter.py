@@ -1,42 +1,182 @@
+import importlib.util
+import os
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 
 
-class MAIDProxyDecoder(nn.Module):
-    """
-    MAID-inspired proxy decoder.
+def _load_module(module_name: str, file_path: Path):
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Tidak bisa memuat module {module_name} dari {file_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    The user explicitly allows MAID to remain a proxy while CQT-Diff+ and
-    AudioMAE use their original repos. This module keeps the same interface as
-    the final pipeline expects for training and evaluation.
+
+def _find_repo_dir(explicit_dir=None):
+    candidates = [
+        explicit_dir,
+        os.environ.get("MIDI2PERFORMANCE_DIR"),
+        os.environ.get("DDPM_MIDI2PERFORMANCE_DIR"),
+        Path(__file__).resolve().parent / "external" / "DDPM-Midi2Performance-Model",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        repo_dir = Path(candidate).expanduser().resolve()
+        if (repo_dir / "main" / "models" / "diffusion" / "unet_openai.py").exists():
+            return repo_dir
+    raise FileNotFoundError(
+        "Repo DDPM-Midi2Performance-Model tidak ditemukan. Set MIDI2PERFORMANCE_DIR "
+        "atau letakkan repo di external/DDPM-Midi2Performance-Model."
+    )
+
+
+def _parse_channel_mult(value):
+    if isinstance(value, str):
+        return tuple(int(v) for v in value.split(",") if v)
+    return tuple(value)
+
+
+class DDPMMidi2PerformanceDecoder(nn.Module):
+    """
+    Adapter MAID untuk pipeline audio inpainting.
+
+    Backbone denoiser dan DDPM scheduler diambil dari repository
+    DDPM-Midi2Performance-Model. Kode lokal hanya menjembatani audio waveform,
+    FiLM SSL conditioning, dan interface training/evaluasi pipeline ini.
     """
 
-    def __init__(self, device, target_sr=44100, n_mels=128, feature_dim=512, n_fft=2048, hop_length=512):
+    def __init__(
+        self,
+        device,
+        repo_dir=None,
+        target_sr=44100,
+        n_mels=128,
+        feature_dim=512,
+        n_fft=2048,
+        hop_length=512,
+        model_channels=64,
+        num_res_blocks=2,
+        channel_mult=(1, 1, 2, 2, 4, 4),
+        dropout=0.0,
+        beta_1=1e-4,
+        beta_2=0.02,
+        n_timesteps=1000,
+        checkpoint_path=None,
+    ):
         super().__init__()
+        self.repo_dir = _find_repo_dir(repo_dir)
         self.target_sr = int(target_sr)
         self.n_mels = int(n_mels)
         self.feature_dim = int(feature_dim)
         self.n_fft = int(n_fft)
         self.hop_length = int(hop_length)
+        self.n_timesteps = int(n_timesteps)
 
-        self.encoder_blocks = nn.ModuleList([
-            nn.Sequential(nn.Linear(self.n_mels, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, self.feature_dim), nn.SiLU()),
-        ])
-        self.decoder_blocks = nn.ModuleList([
-            nn.Sequential(nn.Linear(self.feature_dim, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, 512), nn.SiLU()),
-            nn.Sequential(nn.Linear(512, self.n_mels)),
-        ])
-        self.feature_pool = nn.Sequential(nn.Linear(self.n_mels, self.feature_dim), nn.SiLU())
+        diffusion_dir = self.repo_dir / "main" / "models" / "diffusion"
+        cpu_rng_state = torch.random.get_rng_state()
+        cuda_rng_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        try:
+            unet_mod = _load_module("ddpm_m2p_unet_openai", diffusion_dir / "unet_openai.py")
+            ddpm_mod = _load_module("ddpm_m2p_ddpm", diffusion_dir / "ddpm.py")
+        finally:
+            torch.random.set_rng_state(cpu_rng_state)
+            if cuda_rng_states is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_states)
+
+        backbone = unet_mod.SuperResModel(
+            in_channels=1,
+            model_channels=int(model_channels),
+            out_channels=1,
+            num_res_blocks=int(num_res_blocks),
+            channel_mult=_parse_channel_mult(channel_mult),
+            use_checkpoint=False,
+            dropout=float(dropout),
+            dims=2,
+        )
+        self.diffusion = ddpm_mod.DDPM(
+            backbone,
+            beta_1=float(beta_1),
+            beta_2=float(beta_2),
+            T=self.n_timesteps,
+            var_type="fixedsmall",
+        )
+
+        self.feature_pool = nn.Sequential(
+            nn.Linear(self.n_mels, self.feature_dim),
+            nn.SiLU(),
+            nn.Linear(self.feature_dim, self.feature_dim),
+            nn.SiLU(),
+        )
+        self.condition_to_mel = nn.Sequential(
+            nn.LayerNorm(self.feature_dim),
+            nn.Linear(self.feature_dim, self.n_mels),
+        )
+
+        self._load_pretrained_if_available(checkpoint_path)
         self.to(device)
 
     @property
     def device(self):
-        return next(self.parameters()).device
+        try:
+            return next(self.parameters()).device
+        except StopIteration:
+            return torch.device("cpu")
+
+    @property
+    def decoder(self):
+        return self.diffusion.decoder
+
+    def _candidate_checkpoints(self, checkpoint_path):
+        candidates = [
+            checkpoint_path,
+            os.environ.get("MAID_M2P_CHECKPOINT"),
+            os.environ.get("DDPM_M2P_CHECKPOINT"),
+        ]
+        models_dir = self.repo_dir / "Models"
+        if models_dir.exists():
+            for pattern in ("*.ckpt", "*.pt", "*.pth"):
+                candidates.extend(str(path) for path in sorted(models_dir.glob(pattern)))
+        return [Path(path).expanduser().resolve() for path in candidates if path]
+
+    def _load_pretrained_if_available(self, checkpoint_path=None):
+        ckpt = next((path for path in self._candidate_checkpoints(checkpoint_path) if path.exists()), None)
+        if ckpt is None:
+            print(
+                "DDPM-Midi2Performance checkpoint tidak ditemukan; "
+                "MAID memakai arsitektur asli dan akan dilatih dari awal."
+            )
+            return
+
+        payload = torch.load(ckpt, map_location="cpu", weights_only=False)
+        state = payload.get("state_dict", payload.get("model", payload)) if isinstance(payload, dict) else payload
+        if not isinstance(state, dict):
+            raise TypeError(f"Format checkpoint MAID tidak dikenali: {ckpt}")
+
+        prefixes = [
+            "target_network.decoder.",
+            "online_network.decoder.",
+            "diffusion.decoder.",
+            "decoder.",
+            "model.",
+        ]
+        stripped = {}
+        for key, value in state.items():
+            name = str(key)
+            for prefix in prefixes:
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+                    break
+            stripped[name] = value
+
+        msg = self.decoder.load_state_dict(stripped, strict=False)
+        print(f"DDPM-Midi2Performance pretrained checkpoint diload: {ckpt}")
+        print(f"MAID backbone load_state_dict: {msg}")
 
     def audio_to_mel_batch(self, audio_batch, sr=None):
         sr = int(sr or self.target_sr)
@@ -49,33 +189,37 @@ class MAIDProxyDecoder(nn.Module):
         if audio.dim() == 3:
             audio = audio.squeeze(1)
 
-        window = torch.hann_window(self.n_fft, device=audio.device)
-        spec = torch.stft(
-            audio,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            window=window,
-            return_complex=True,
-        )
-        power = spec.abs().pow(2)
-        mel_basis = torchaudio.functional.melscale_fbanks(
-            n_freqs=self.n_fft // 2 + 1,
-            f_min=0.0,
-            f_max=sr / 2,
-            n_mels=self.n_mels,
-            sample_rate=sr,
-            norm="slaney",
-            mel_scale="slaney",
-        ).to(audio.device, dtype=audio.dtype).T
-        mel_power = torch.einsum("mf,bft->bmt", mel_basis, power).clamp_min(1e-10)
-        mel_db_raw = 10.0 * torch.log10(mel_power)
-        ref_db = mel_db_raw.amax(dim=(1, 2), keepdim=True)
-        mel_db = torch.clamp(mel_db_raw - ref_db, min=-80.0)
-        mel_norm = (mel_db + 40.0) / 40.0
+        with torch.autocast(device_type="cuda" if audio.device.type == "cuda" else "cpu", enabled=False):
+            window = torch.hann_window(self.n_fft, device=audio.device)
+            spec = torch.stft(
+                audio.float(),
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                window=window,
+                return_complex=True,
+            )
+            power = spec.abs().pow(2)
+            mel_basis = torchaudio.functional.melscale_fbanks(
+                n_freqs=self.n_fft // 2 + 1,
+                f_min=0.0,
+                f_max=sr / 2,
+                n_mels=self.n_mels,
+                sample_rate=sr,
+                norm="slaney",
+                mel_scale="slaney",
+            ).to(audio.device, dtype=torch.float32).T
+            mel_power = torch.einsum("mf,bft->bmt", mel_basis, power).clamp_min(1e-10)
+            mel_db_raw = 10.0 * torch.log10(mel_power)
+            ref_db = mel_db_raw.amax(dim=(1, 2), keepdim=True)
+            mel_db = torch.clamp(mel_db_raw - ref_db, min=-80.0)
+            mel_norm = torch.clamp((mel_db + 40.0) / 40.0, min=-1.0, max=1.0)
         return mel_db, mel_norm
 
     def mask_to_frame_mask(self, mask_batch, frame_count):
-        mask_t = mask_batch.to(self.device).bool() if isinstance(mask_batch, torch.Tensor) else torch.as_tensor(mask_batch, dtype=torch.bool, device=self.device)
+        if isinstance(mask_batch, torch.Tensor):
+            mask_t = mask_batch.to(self.device).bool()
+        else:
+            mask_t = torch.as_tensor(mask_batch, dtype=torch.bool, device=self.device)
         if mask_t.dim() == 1:
             mask_t = mask_t.unsqueeze(0)
         pooled = F.max_pool1d(
@@ -95,16 +239,55 @@ class MAIDProxyDecoder(nn.Module):
         pooled = mel_norm.mean(dim=-1)
         return self.feature_pool(pooled)
 
+    def _conditioning_image(self, masked_mel_norm, conditioning=None):
+        cond = masked_mel_norm.unsqueeze(1)
+        if conditioning is None:
+            return cond
+        bias = self.condition_to_mel(conditioning.float()).unsqueeze(-1)
+        bias = torch.tanh(bias).expand(-1, -1, masked_mel_norm.shape[-1])
+        return torch.clamp(cond + 0.25 * bias.unsqueeze(1), min=-1.0, max=1.0)
+
+    def _pad_frames_for_unet(self, mel_norm):
+        frame_count = mel_norm.shape[-1]
+        stride = 2 ** (len(self.decoder.channel_mult) - 1)
+        pad_frames = (stride - frame_count % stride) % stride
+        if pad_frames:
+            mel_norm = F.pad(mel_norm, (0, pad_frames), value=-1.0)
+        return mel_norm, frame_count
+
+    def diffusion_loss(self, clean_audio, masked_audio, mask=None, conditioning=None):
+        _, clean_mel_norm = self.audio_to_mel_batch(clean_audio)
+        _, masked_mel_norm = self.audio_to_mel_batch(masked_audio)
+        clean_mel_norm, _ = self._pad_frames_for_unet(clean_mel_norm)
+        masked_mel_norm, _ = self._pad_frames_for_unet(masked_mel_norm)
+        target = clean_mel_norm.unsqueeze(1)
+        cond = self._conditioning_image(masked_mel_norm, conditioning=conditioning)
+
+        t = torch.randint(0, self.n_timesteps, size=(target.size(0),), device=target.device)
+        eps = torch.randn_like(target)
+        eps_pred = self.diffusion(target, eps, t, y=None, cond=cond)
+
+        full_loss = F.l1_loss(eps_pred, eps)
+        if mask is None:
+            gap_loss = full_loss
+        else:
+            frame_mask = self.mask_to_frame_mask(mask, target.shape[-1]).unsqueeze(1).unsqueeze(1)
+            expanded_mask = frame_mask.expand_as(target)
+            if expanded_mask.any():
+                gap_loss = F.l1_loss(eps_pred[expanded_mask], eps[expanded_mask])
+            else:
+                gap_loss = full_loss
+        loss = gap_loss + 0.1 * full_loss
+        return {"loss": loss, "gap_loss": gap_loss, "full_loss": full_loss}
+
     def predict_mel_norm(self, masked_audio, conditioning=None):
-        _, mel_norm = self.audio_to_mel_batch(masked_audio)
-        x = mel_norm.permute(0, 2, 1)
-        for block in self.encoder_blocks:
-            x = block(x)
-        if conditioning is not None:
-            x = x + conditioning.unsqueeze(1)
-        for block in self.decoder_blocks:
-            x = block(x)
-        return x
+        _, masked_mel_norm = self.audio_to_mel_batch(masked_audio)
+        masked_mel_norm, frame_count = self._pad_frames_for_unet(masked_mel_norm)
+        cond = self._conditioning_image(masked_mel_norm, conditioning=conditioning)
+        t = torch.zeros(cond.size(0), device=cond.device, dtype=torch.long)
+        eps_pred = self.decoder(cond, t, y=None, cond=cond)
+        pred = torch.clamp((cond - eps_pred).squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
+        return pred.permute(0, 2, 1)
 
     def _mel_db_to_audio_tensor(self, mel_db_pred, target_len):
         if mel_db_pred.dim() == 2:
@@ -122,7 +305,7 @@ class MAIDProxyDecoder(nn.Module):
         griffinlim = torchaudio.transforms.GriffinLim(
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            n_iter=16,
+            n_iter=32,
             power=1.0,
         ).to(mel_power.device)
         linear_power = inverse_mel(mel_power).clamp_min(1e-10)
@@ -140,11 +323,19 @@ class MAIDProxyDecoder(nn.Module):
             mask = mask.unsqueeze(0)
         masked_audio = masked_audio.to(self.device, dtype=torch.float32)
         mask = mask.to(self.device).bool()
-        base_mel_db, _ = self.audio_to_mel_batch(masked_audio)
-        pred_mel_norm = self.predict_mel_norm(masked_audio, conditioning=conditioning)
-        pred_mel_db = pred_mel_norm.permute(0, 2, 1) * 40.0 - 40.0
-        frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[1]).unsqueeze(1)
-        output_mel_db = torch.where(frame_mask, pred_mel_db, base_mel_db)
+
+        _, masked_mel_norm = self.audio_to_mel_batch(masked_audio)
+        masked_mel_padded, frame_count = self._pad_frames_for_unet(masked_mel_norm)
+        cond = self._conditioning_image(masked_mel_padded, conditioning=conditioning)
+        x_t = torch.randn_like(cond)
+        n_steps = int(os.environ.get("MAID_M2P_INFERENCE_STEPS", n_steps))
+        n_steps = max(1, min(n_steps, self.n_timesteps))
+        samples = self.diffusion.sample(x_t, y=None, cond=cond, n_steps=n_steps, checkpoints=[n_steps])
+        pred_mel_norm = torch.clamp(samples[str(n_steps)].squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
+
+        frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[-1]).unsqueeze(1)
+        output_mel_norm = torch.where(frame_mask, pred_mel_norm, masked_mel_norm)
+        output_mel_db = output_mel_norm * 40.0 - 40.0
         reconstructed = self._mel_db_to_audio_tensor(output_mel_db, masked_audio.shape[-1])
         output = torch.where(mask, reconstructed, masked_audio)
         if output.shape[0] == 1:
@@ -152,5 +343,17 @@ class MAIDProxyDecoder(nn.Module):
         return output.detach().cpu().numpy()
 
 
-def build_maid_decoder(device, target_sr, segment_samples, gap_durations_ms):
-    return MAIDProxyDecoder(device=device, target_sr=target_sr)
+def build_maid_decoder(
+    device,
+    target_sr,
+    segment_samples,
+    gap_durations_ms,
+    midi2performance_dir=None,
+    checkpoint_path=None,
+):
+    return DDPMMidi2PerformanceDecoder(
+        device=device,
+        repo_dir=midi2performance_dir,
+        target_sr=target_sr,
+        checkpoint_path=checkpoint_path,
+    )

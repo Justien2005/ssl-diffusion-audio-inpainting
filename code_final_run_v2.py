@@ -144,6 +144,10 @@ PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 EXTERNAL_DIR = os.path.join(PROJECT_ROOT, "external")
 CQT_DIFF_DIR = os.environ.get("CQT_DIFF_DIR", os.path.join(EXTERNAL_DIR, "CQTdiff"))
 AUDIO_MAE_DIR = os.environ.get("AUDIO_MAE_DIR", os.path.join(EXTERNAL_DIR, "AudioMAE"))
+MIDI2PERFORMANCE_DIR = os.environ.get(
+    "MIDI2PERFORMANCE_DIR",
+    os.path.join(EXTERNAL_DIR, "DDPM-Midi2Performance-Model"),
+)
 os.makedirs(EXTERNAL_DIR, exist_ok=True)
 
 if os.path.exists(os.path.join(CQT_DIFF_DIR, ".git")):
@@ -160,6 +164,9 @@ if CQT_DIFF_DIR not in sys.path:
     sys.path.insert(0, CQT_DIFF_DIR)
 if os.path.isdir(AUDIO_MAE_DIR) and AUDIO_MAE_DIR not in sys.path:
     sys.path.insert(0, AUDIO_MAE_DIR)
+MIDI2PERFORMANCE_MAIN_DIR = os.path.join(MIDI2PERFORMANCE_DIR, "main")
+if os.path.isdir(MIDI2PERFORMANCE_MAIN_DIR) and MIDI2PERFORMANCE_MAIN_DIR not in sys.path:
+    sys.path.insert(0, MIDI2PERFORMANCE_MAIN_DIR)
 
 print("\nDependencies siap.")
 print("\nMode final: semua komponen model harus memakai implementasi asli.")
@@ -230,19 +237,21 @@ def validate_official_model_configuration():
 
     required_adapters = {
         "CQT-Diff+ original": OFFICIAL_CQTDIFF_ADAPTER,
-        "MAID proxy": MAID_ADAPTER,
+        "MAID original DDPM-Midi2Performance": MAID_ADAPTER,
     }
     missing = [
         f"{label}: module '{module_name}'"
         for label, module_name in required_adapters.items()
         if importlib.util.find_spec(module_name) is None
     ]
+    if not os.path.exists(os.path.join(MIDI2PERFORMANCE_DIR, "main", "models", "diffusion", "unet_openai.py")):
+        missing.append(f"MAID original DDPM-Midi2Performance: repo '{MIDI2PERFORMANCE_DIR}'")
     if missing:
         raise RuntimeError(
             "Final pipeline disetel official-only, tetapi adapter model asli belum tersedia:\n"
             + "\n".join(f"  - {item}" for item in missing)
             + "\n\nBuat module adapter tersebut di PYTHONPATH atau set env var "
-              "OFFICIAL_CQTDIFF_ADAPTER/MAID_ADAPTER ke module adapter yang benar."
+              "OFFICIAL_CQTDIFF_ADAPTER/MAID_ADAPTER/MIDI2PERFORMANCE_DIR ke nilai yang benar."
         )
 
 
@@ -2826,7 +2835,7 @@ print("             train_model, train_baseline_model, validate_model")
 # ============================================================
 # Helper bersama untuk:
 # - builder encoder batch-capable (CLAP, AudioMAE)
-# - builder decoder via adapters (CQT-Diff+ original, MAID proxy)
+# - builder decoder via adapters (CQT-Diff+ original, MAID original DDPM-Midi2Performance)
 # - save/load checkpoint hybrid
 # - trainer minimal-kompatibel untuk MAID
 # - helper evaluasi hybrid yang selalu load checkpoint terlatih
@@ -3088,22 +3097,23 @@ def build_maid_decoder(device):
     builder = _load_official_adapter(
         MAID_ADAPTER,
         "build_maid_decoder",
-        "MAID proxy",
+        "MAID original DDPM-Midi2Performance",
     )
     decoder = builder(
         device=device,
         target_sr=TARGET_SR,
         segment_samples=SEGMENT_SAMPLES,
         gap_durations_ms=GAP_DURATIONS_MS,
+        midi2performance_dir=MIDI2PERFORMANCE_DIR,
     )
     decoder = _validate_decoder_interface(
         decoder,
         ["get_features", "predict_mel_norm", "audio_to_mel_batch", "mask_to_frame_mask", "inpaint",
-         "parameters", "state_dict", "load_state_dict", "train", "eval"],
-        "MAID proxy",
+         "diffusion_loss", "parameters", "state_dict", "load_state_dict", "train", "eval"],
+        "MAID original DDPM-Midi2Performance",
     )
     decoder.eval()
-    print("MAID proxy loaded via adapter.")
+    print("MAID original DDPM-Midi2Performance loaded via adapter.")
     return decoder
 
 
@@ -3310,16 +3320,27 @@ def train_maid_step(decoder, encoder_fn, film, batch, optimizer, scaler, cfg_dro
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
         decoder_features = decoder.get_features(masked)
         conditioned_features = film(z.float(), decoder_features)
-        pred_mel_norm = decoder.predict_mel_norm(masked, conditioning=conditioned_features)
-        _, clean_mel_norm = decoder.audio_to_mel_batch(clean)
-        clean_mel_norm = clean_mel_norm.permute(0, 2, 1)
+        if hasattr(decoder, "diffusion_loss"):
+            loss_parts = decoder.diffusion_loss(
+                clean,
+                masked,
+                mask=mask,
+                conditioning=conditioned_features,
+            )
+            loss = loss_parts["loss"]
+            gap_loss = loss_parts.get("gap_loss", loss)
+            full_loss = loss_parts.get("full_loss", loss)
+        else:
+            pred_mel_norm = decoder.predict_mel_norm(masked, conditioning=conditioned_features)
+            _, clean_mel_norm = decoder.audio_to_mel_batch(clean)
+            clean_mel_norm = clean_mel_norm.permute(0, 2, 1)
 
-        frame_mask = decoder.mask_to_frame_mask(mask, pred_mel_norm.shape[1])
-        expanded_mask = frame_mask.unsqueeze(-1).expand_as(pred_mel_norm)
+            frame_mask = decoder.mask_to_frame_mask(mask, pred_mel_norm.shape[1])
+            expanded_mask = frame_mask.unsqueeze(-1).expand_as(pred_mel_norm)
 
-        gap_loss = F.l1_loss(pred_mel_norm[expanded_mask], clean_mel_norm[expanded_mask])
-        full_loss = F.l1_loss(pred_mel_norm, clean_mel_norm)
-        loss = gap_loss + 0.1 * full_loss
+            gap_loss = F.l1_loss(pred_mel_norm[expanded_mask], clean_mel_norm[expanded_mask])
+            full_loss = F.l1_loss(pred_mel_norm, clean_mel_norm)
+            loss = gap_loss + 0.1 * full_loss
 
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
@@ -3335,8 +3356,8 @@ def train_maid_step(decoder, encoder_fn, film, batch, optimizer, scaler, cfg_dro
 
     return {
         "loss": loss.item(),
-        "gap_loss": gap_loss.item(),
-        "full_loss": full_loss.item(),
+        "gap_loss": gap_loss.item() if isinstance(gap_loss, torch.Tensor) else float(gap_loss),
+        "full_loss": full_loss.item() if isinstance(full_loss, torch.Tensor) else float(full_loss),
         "_profile": profile,
     }
 
@@ -3407,12 +3428,21 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                     z = cached_z.to(device, non_blocking=True) if cached_z is not None else encoder_fn(masked)
                     decoder_features = decoder.get_features(masked)
                     conditioned_features = film(z.float(), decoder_features)
-                    pred_mel_norm = decoder.predict_mel_norm(masked, conditioning=conditioned_features)
-                    _, clean_mel_norm = decoder.audio_to_mel_batch(clean)
-                    clean_mel_norm = clean_mel_norm.permute(0, 2, 1)
-                    frame_mask = decoder.mask_to_frame_mask(mask_b, pred_mel_norm.shape[1])
-                    expanded_mask = frame_mask.unsqueeze(-1).expand_as(pred_mel_norm)
-                    batch_val_loss = F.l1_loss(pred_mel_norm[expanded_mask], clean_mel_norm[expanded_mask])
+                    if hasattr(decoder, "diffusion_loss"):
+                        loss_parts = decoder.diffusion_loss(
+                            clean,
+                            masked,
+                            mask=mask_b,
+                            conditioning=conditioned_features,
+                        )
+                        batch_val_loss = loss_parts.get("gap_loss", loss_parts["loss"])
+                    else:
+                        pred_mel_norm = decoder.predict_mel_norm(masked, conditioning=conditioned_features)
+                        _, clean_mel_norm = decoder.audio_to_mel_batch(clean)
+                        clean_mel_norm = clean_mel_norm.permute(0, 2, 1)
+                        frame_mask = decoder.mask_to_frame_mask(mask_b, pred_mel_norm.shape[1])
+                        expanded_mask = frame_mask.unsqueeze(-1).expand_as(pred_mel_norm)
+                        batch_val_loss = F.l1_loss(pred_mel_norm[expanded_mask], clean_mel_norm[expanded_mask])
                     val_losses.append(batch_val_loss.item())
 
             val_loss = float(np.mean(val_losses)) if val_losses else float("nan")
