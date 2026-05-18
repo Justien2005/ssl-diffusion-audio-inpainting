@@ -2866,6 +2866,25 @@ def hybrid_checkpoint_exists(model_name: str):
     return os.path.exists(get_model_checkpoint_path(model_name))
 
 
+def reset_training_checkpoints_if_requested(model_name: str, force_retrain: bool):
+    """Remove latest/best checkpoints so FORCE_RETRAIN starts from epoch 1."""
+    if not force_retrain:
+        return
+
+    ckpt_dir = get_model_checkpoint_dir(model_name)
+    paths = get_training_checkpoint_paths(ckpt_dir, model_name)
+    removed = []
+    for path in paths.values():
+        if os.path.exists(path):
+            os.remove(path)
+            removed.append(path)
+
+    if removed:
+        print(f"♻️ FORCE_RETRAIN aktif. Checkpoint lama dihapus untuk {model_name}:")
+        for path in removed:
+            print(f"   - {path}")
+
+
 def load_hybrid_checkpoint(model_name: str, decoder: nn.Module, film_layer: nn.Module, device):
     ckpt_path = get_model_checkpoint_path(model_name)
     if not os.path.exists(ckpt_path):
@@ -3838,6 +3857,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
+if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
+    reset_training_checkpoints_if_requested(MODEL_NAME, FORCE_RETRAIN)
+
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
 if not should_run_train(MODEL_NAME):
     print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
@@ -3852,8 +3874,6 @@ else:
     try:
         print(f"🔧 Device: {device}")
         check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
-        if FORCE_RETRAIN and hybrid_checkpoint_exists(MODEL_NAME):
-            print(f"♻️ FORCE_RETRAIN aktif. Checkpoint lama akan ditimpa: {ckpt_path}")
 
         loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
         clap_model, encoder_fn = build_clap_encoder(device)
@@ -3967,6 +3987,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
+if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
+    reset_training_checkpoints_if_requested(MODEL_NAME, FORCE_RETRAIN)
+
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
 if not should_run_train(MODEL_NAME):
     print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
@@ -3981,8 +4004,6 @@ else:
     try:
         print(f"🔧 Device: {device}")
         check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
-        if FORCE_RETRAIN and hybrid_checkpoint_exists(MODEL_NAME):
-            print(f"♻️ FORCE_RETRAIN aktif. Checkpoint lama akan ditimpa: {ckpt_path}")
 
         loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
         clap_model, encoder_fn = build_clap_encoder(device)
@@ -4096,6 +4117,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
+if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
+    reset_training_checkpoints_if_requested(MODEL_NAME, FORCE_RETRAIN)
+
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
 if not should_run_train(MODEL_NAME):
     print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
@@ -4110,8 +4134,6 @@ else:
     try:
         print(f"🔧 Device: {device}")
         check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
-        if FORCE_RETRAIN and hybrid_checkpoint_exists(MODEL_NAME):
-            print(f"♻️ FORCE_RETRAIN aktif. Checkpoint lama akan ditimpa: {ckpt_path}")
 
         loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
         audiomae_model, encoder_fn = build_audiomae_encoder(device)
@@ -4224,6 +4246,9 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION
 
 assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
 
+if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
+    reset_training_checkpoints_if_requested(MODEL_NAME, FORCE_RETRAIN)
+
 ckpt_path = get_model_checkpoint_path(MODEL_NAME)
 if not should_run_train(MODEL_NAME):
     print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
@@ -4238,8 +4263,6 @@ else:
     try:
         print(f"🔧 Device: {device}")
         check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
-        if FORCE_RETRAIN and hybrid_checkpoint_exists(MODEL_NAME):
-            print(f"♻️ FORCE_RETRAIN aktif. Checkpoint lama akan ditimpa: {ckpt_path}")
 
         loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
         audiomae_model, encoder_fn = build_audiomae_encoder(device)

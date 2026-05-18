@@ -1,0 +1,1001 @@
+2026-05-18 11:27:51,267 | INFO | Run started | stage=code_v3_final_run | run_id=20260518_112751
+2026-05-18 11:27:51,419 | INFO | Environment snapshot saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/gpu_environment.json
+Persistent logs: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs
+Environment snapshot: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/gpu_environment.json
+nvidia-smi -q log: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/nvidia_smi_q.txt
+
+Semua folder stage siap!
+Root folder stage: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run
+?? Downloading MusicNet audio files...
+   Estimasi ukuran: ~11GB full archive
+
+  Progress: 0.0%
+  Progress: 100.0%
+  Download selesai.
+  Mengekstrak MusicNet audio...
+? Dataset berhasil diekstrak ke /workspace/ssl-diffusion-audio-inpainting/music_inpainting/dataset/audio
+📥 Downloading MusicNet metadata...
+
+📊 Total file audio: 330
+📊 File yang dipakai (3%): 10
+📊 Sample rate target: 44100 Hz
+📊 Random seed: 42 | Stratified by composer + instrument
+📊 Gap durations: [100, 300, 500, 750, 1200, 1700] ms
+
+📊 Distribusi strata terpilih (top 10):
+composer   instrument        
+Beethoven  Solo Piano            3
+Bach       Solo Cello            1
+           Solo Piano            1
+Beethoven  Accompanied Violin    1
+           String Quartet        1
+Cambini    Wind Quintet          1
+Mozart     String Quartet        1
+Schubert   Solo Piano            1
+
+🔄 Memulai preprocessing...
+
+✅ Preprocessing selesai! Total segmen: 50
+   Metadata: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/metadata.csv
+✅ FiLMLayer berhasil didefinisikan!
+
+📋 Konfigurasi FiLM per kombinasi:
+   clap_cqtdiff: encoder_dim=512, decoder_feature_dim=256
+   clap_maid: encoder_dim=512, decoder_feature_dim=512
+   audiomae_cqtdiff: encoder_dim=768, decoder_feature_dim=256
+   audiomae_maid: encoder_dim=768, decoder_feature_dim=512
+   baseline_cqtdiff: tidak menggunakan FiLM
+✅ Fungsi evaluasi (LSD, FAD, PEAQ_ODG) berhasil didefinisikan!
+✅ Helper functions berhasil didefinisikan!
+✅ Dataset, DataLoader & shared utilities berhasil didefinisikan!
+   Gap durations: [100, 300, 500, 750, 1200, 1700] ms
+   AUTO_NUM_WORKERS: 2
+   ENCODER_PRECOMPUTE_NUM_WORKERS: 0
+   CPU thread env limit: 1
+✅ Training loop (reconstruction-based) berhasil didefinisikan!
+   Komponen: train_step_reconstruction, train_step_baseline,
+             train_model, train_baseline_model, validate_model
+✅ Shared hybrid training helpers berhasil didefinisikan!
+   Tersedia: builder encoder asli, adapter decoder asli, checkpoint helpers, trainer MAID,
+   run_hybrid_inpainting_evaluation, run_baseline_inpainting_evaluation
+
+Run selection:
+   phases: ['eval', 'summary', 'train']
+   models: ['audiomae_cqtdiff']
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+⏭️ Skip baseline_cqtdiff: tidak dipilih oleh RUN_PHASE/RUN_MODELS.
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+⏭️ Skip training clap_cqtdiff: RUN_PHASE/RUN_MODELS tidak memilih blok ini.
+⏭️ Skip evaluasi clap_cqtdiff: RUN_PHASE/RUN_MODELS tidak memilih blok ini.
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+⏭️ Skip training clap_maid: RUN_PHASE/RUN_MODELS tidak memilih blok ini.
+⏭️ Skip evaluasi clap_maid: RUN_PHASE/RUN_MODELS tidak memilih blok ini.
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+🔧 Device: cuda
+GPU check: NVIDIA GeForce RTX 3090 | VRAM 23.56 GiB | batch_size=4
+? VRAM memenuhi estimasi minimum batch size 4.
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+DataLoader config: batch_size=4, num_workers=2, pin_memory=True, prefetch=2, cache_audio=True
+   Cached 30 audio segments (20.2 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+AudioMAE asli dari repo berhasil diload: /workspace/ssl-diffusion-audio-inpainting/external/AudioMAE/ckpt/pretrained.pth
+AudioMAE load_state_dict: _IncompatibleKeys(missing_keys=['mask_token', 'decoder_pos_embed', 'norm.weight', 'norm.bias', 'decoder_embed.weight', 'decoder_embed.bias', 'decoder_blocks.0.norm1.weight', 'decoder_blocks.0.norm1.bias', 'decoder_blocks.0.attn.qkv.weight', 'decoder_blocks.0.attn.qkv.bias', 'decoder_blocks.0.attn.proj.weight', 'decoder_blocks.0.attn.proj.bias', 'decoder_blocks.0.norm2.weight', 'decoder_blocks.0.norm2.bias', 'decoder_blocks.0.mlp.fc1.weight', 'decoder_blocks.0.mlp.fc1.bias', 'decoder_blocks.0.mlp.fc2.weight', 'decoder_blocks.0.mlp.fc2.bias', 'decoder_blocks.1.norm1.weight', 'decoder_blocks.1.norm1.bias', 'decoder_blocks.1.attn.qkv.weight', 'decoder_blocks.1.attn.qkv.bias', 'decoder_blocks.1.attn.proj.weight', 'decoder_blocks.1.attn.proj.bias', 'decoder_blocks.1.norm2.weight', 'decoder_blocks.1.norm2.bias', 'decoder_blocks.1.mlp.fc1.weight', 'decoder_blocks.1.mlp.fc1.bias', 'decoder_blocks.1.mlp.fc2.weight', 'decoder_blocks.1.mlp.fc2.bias', 'decoder_blocks.2.norm1.weight', 'decoder_blocks.2.norm1.bias', 'decoder_blocks.2.attn.qkv.weight', 'decoder_blocks.2.attn.qkv.bias', 'decoder_blocks.2.attn.proj.weight', 'decoder_blocks.2.attn.proj.bias', 'decoder_blocks.2.norm2.weight', 'decoder_blocks.2.norm2.bias', 'decoder_blocks.2.mlp.fc1.weight', 'decoder_blocks.2.mlp.fc1.bias', 'decoder_blocks.2.mlp.fc2.weight', 'decoder_blocks.2.mlp.fc2.bias', 'decoder_blocks.3.norm1.weight', 'decoder_blocks.3.norm1.bias', 'decoder_blocks.3.attn.qkv.weight', 'decoder_blocks.3.attn.qkv.bias', 'decoder_blocks.3.attn.proj.weight', 'decoder_blocks.3.attn.proj.bias', 'decoder_blocks.3.norm2.weight', 'decoder_blocks.3.norm2.bias', 'decoder_blocks.3.mlp.fc1.weight', 'decoder_blocks.3.mlp.fc1.bias', 'decoder_blocks.3.mlp.fc2.weight', 'decoder_blocks.3.mlp.fc2.bias', 'decoder_blocks.4.norm1.weight', 'decoder_blocks.4.norm1.bias', 'decoder_blocks.4.attn.qkv.weight', 'decoder_blocks.4.attn.qkv.bias', 'decoder_blocks.4.attn.proj.weight', 'decoder_blocks.4.attn.proj.bias', 'decoder_blocks.4.norm2.weight', 'decoder_blocks.4.norm2.bias', 'decoder_blocks.4.mlp.fc1.weight', 'decoder_blocks.4.mlp.fc1.bias', 'decoder_blocks.4.mlp.fc2.weight', 'decoder_blocks.4.mlp.fc2.bias', 'decoder_blocks.5.norm1.weight', 'decoder_blocks.5.norm1.bias', 'decoder_blocks.5.attn.qkv.weight', 'decoder_blocks.5.attn.qkv.bias', 'decoder_blocks.5.attn.proj.weight', 'decoder_blocks.5.attn.proj.bias', 'decoder_blocks.5.norm2.weight', 'decoder_blocks.5.norm2.bias', 'decoder_blocks.5.mlp.fc1.weight', 'decoder_blocks.5.mlp.fc1.bias', 'decoder_blocks.5.mlp.fc2.weight', 'decoder_blocks.5.mlp.fc2.bias', 'decoder_blocks.6.norm1.weight', 'decoder_blocks.6.norm1.bias', 'decoder_blocks.6.attn.qkv.weight', 'decoder_blocks.6.attn.qkv.bias', 'decoder_blocks.6.attn.proj.weight', 'decoder_blocks.6.attn.proj.bias', 'decoder_blocks.6.norm2.weight', 'decoder_blocks.6.norm2.bias', 'decoder_blocks.6.mlp.fc1.weight', 'decoder_blocks.6.mlp.fc1.bias', 'decoder_blocks.6.mlp.fc2.weight', 'decoder_blocks.6.mlp.fc2.bias', 'decoder_blocks.7.norm1.weight', 'decoder_blocks.7.norm1.bias', 'decoder_blocks.7.attn.qkv.weight', 'decoder_blocks.7.attn.qkv.bias', 'decoder_blocks.7.attn.proj.weight', 'decoder_blocks.7.attn.proj.bias', 'decoder_blocks.7.norm2.weight', 'decoder_blocks.7.norm2.bias', 'decoder_blocks.7.mlp.fc1.weight', 'decoder_blocks.7.mlp.fc1.bias', 'decoder_blocks.7.mlp.fc2.weight', 'decoder_blocks.7.mlp.fc2.bias', 'decoder_norm.weight', 'decoder_norm.bias', 'decoder_pred.weight', 'decoder_pred.bias'], unexpected_keys=['head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'])
+   Precomputing encoder latents [train] (180 items, num_workers=0)...
+   Saved encoder latents [train] in 2.7s: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/audiomae_train_n180_sr44100_gaps100-300-500-750-1200-1700.pt
+   Precomputing encoder latents [val] (60 items, num_workers=0)...
+   Saved encoder latents [val] in 0.8s: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/audiomae_val_n60_sr44100_gaps100-300-500-750-1200-1700.pt
+Patched CQTdiff NumPy clip compatibility: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/src/nsgt/nsgfwin_sl.py
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+🖥️  GPU [Sebelum training] | Terpakai: 0.53GB | Reserved: 0.82GB | Bebas: 24.47GB / 25.30GB
+  Epoch 1/5 | Loss: 0.327063 | LR: 1.00e-04 | Time: 30.0s
+  Profile audiomae_cqtdiff epoch 1: data_wait=0.20s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=45.08s | gpu_active_share~=99.5% | peak_vram=2.39GB | nvidia-smi gpu=100% mem_util=18% mem=4020/24576MB
+2026-05-18 11:36:54,032 | INFO | audiomae_cqtdiff epoch=1 train_loss=0.327063
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_latest.pt
+2026-05-18 11:36:54,754 | INFO | Training history saved for audiomae_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_cqtdiff_training_history.csv
+  Epoch 2/5 | Loss: 0.290196 | LR: 9.05e-05 | Time: 27.5s
+  Profile audiomae_cqtdiff epoch 2: data_wait=0.07s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=26.61s | gpu_active_share~=99.6% | peak_vram=2.39GB | nvidia-smi gpu=100% mem_util=63% mem=4020/24576MB
+2026-05-18 11:37:22,288 | INFO | audiomae_cqtdiff epoch=2 train_loss=0.290196
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_latest.pt
+2026-05-18 11:37:22,507 | INFO | Training history saved for audiomae_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_cqtdiff_training_history.csv
+  Epoch 3/5 | Loss: 0.276083 | LR: 6.55e-05 | Time: 28.5s
+  Profile audiomae_cqtdiff epoch 3: data_wait=0.05s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=27.39s | gpu_active_share~=99.7% | peak_vram=2.39GB | nvidia-smi gpu=100% mem_util=49% mem=4020/24576MB
+2026-05-18 11:37:51,039 | INFO | audiomae_cqtdiff epoch=3 train_loss=0.276083
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_latest.pt
+2026-05-18 11:37:51,247 | INFO | Training history saved for audiomae_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_cqtdiff_training_history.csv
+  Epoch 4/5 | Loss: 0.277676 | LR: 3.45e-05 | Time: 28.2s
+  Profile audiomae_cqtdiff epoch 4: data_wait=0.07s | h2d~=0.02s | preproc/encoder~=0.00s | gpu_compute~=30.27s | gpu_active_share~=99.7% | peak_vram=2.39GB | nvidia-smi gpu=100% mem_util=48% mem=4020/24576MB
+2026-05-18 11:38:19,527 | INFO | audiomae_cqtdiff epoch=4 train_loss=0.277676
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_latest.pt
+2026-05-18 11:38:19,733 | INFO | Training history saved for audiomae_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_cqtdiff_training_history.csv
+  Epoch 5/5 | Loss: 0.274997 | LR: 9.55e-06 | Time: 28.2s
+  Profile audiomae_cqtdiff epoch 5: data_wait=0.06s | h2d~=0.02s | preproc/encoder~=0.00s | gpu_compute~=27.00s | gpu_active_share~=99.7% | peak_vram=2.39GB | nvidia-smi gpu=74% mem_util=25% mem=4020/24576MB
+  Val Loss: 0.242229
+2026-05-18 11:38:57,183 | INFO | audiomae_cqtdiff epoch=5 train_loss=0.274997 val_loss=0.242229
+  Best checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_latest.pt
+2026-05-18 11:38:57,480 | INFO | Training history saved for audiomae_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_cqtdiff_training_history.csv
+
+Training time this run audiomae_cqtdiff: 2m 33s
+Total recorded training time audiomae_cqtdiff: 2m 22s
+Average epoch time audiomae_cqtdiff: 28.5s
+2026-05-18 11:38:57,482 | INFO | Training timing saved for audiomae_cqtdiff: 142.37s
+Timing summary updated: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/training_timing_summary.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+Training complete. Best val loss: 0.242229
+✅ Training selesai. Checkpoint siap dipakai: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+🖥️  GPU [Sebelum clear] | Terpakai: 0.55GB | Reserved: 3.86GB | Bebas: 21.44GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.55GB | Reserved: 0.63GB | Bebas: 24.67GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+🖥️  GPU [Awal] | Terpakai: 0.47GB | Reserved: 0.63GB | Bebas: 24.67GB / 25.30GB
+📦 Menggunakan checkpoint: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+AudioMAE asli dari repo berhasil diload: /workspace/ssl-diffusion-audio-inpainting/external/AudioMAE/ckpt/pretrained.pth
+AudioMAE load_state_dict: _IncompatibleKeys(missing_keys=['mask_token', 'decoder_pos_embed', 'norm.weight', 'norm.bias', 'decoder_embed.weight', 'decoder_embed.bias', 'decoder_blocks.0.norm1.weight', 'decoder_blocks.0.norm1.bias', 'decoder_blocks.0.attn.qkv.weight', 'decoder_blocks.0.attn.qkv.bias', 'decoder_blocks.0.attn.proj.weight', 'decoder_blocks.0.attn.proj.bias', 'decoder_blocks.0.norm2.weight', 'decoder_blocks.0.norm2.bias', 'decoder_blocks.0.mlp.fc1.weight', 'decoder_blocks.0.mlp.fc1.bias', 'decoder_blocks.0.mlp.fc2.weight', 'decoder_blocks.0.mlp.fc2.bias', 'decoder_blocks.1.norm1.weight', 'decoder_blocks.1.norm1.bias', 'decoder_blocks.1.attn.qkv.weight', 'decoder_blocks.1.attn.qkv.bias', 'decoder_blocks.1.attn.proj.weight', 'decoder_blocks.1.attn.proj.bias', 'decoder_blocks.1.norm2.weight', 'decoder_blocks.1.norm2.bias', 'decoder_blocks.1.mlp.fc1.weight', 'decoder_blocks.1.mlp.fc1.bias', 'decoder_blocks.1.mlp.fc2.weight', 'decoder_blocks.1.mlp.fc2.bias', 'decoder_blocks.2.norm1.weight', 'decoder_blocks.2.norm1.bias', 'decoder_blocks.2.attn.qkv.weight', 'decoder_blocks.2.attn.qkv.bias', 'decoder_blocks.2.attn.proj.weight', 'decoder_blocks.2.attn.proj.bias', 'decoder_blocks.2.norm2.weight', 'decoder_blocks.2.norm2.bias', 'decoder_blocks.2.mlp.fc1.weight', 'decoder_blocks.2.mlp.fc1.bias', 'decoder_blocks.2.mlp.fc2.weight', 'decoder_blocks.2.mlp.fc2.bias', 'decoder_blocks.3.norm1.weight', 'decoder_blocks.3.norm1.bias', 'decoder_blocks.3.attn.qkv.weight', 'decoder_blocks.3.attn.qkv.bias', 'decoder_blocks.3.attn.proj.weight', 'decoder_blocks.3.attn.proj.bias', 'decoder_blocks.3.norm2.weight', 'decoder_blocks.3.norm2.bias', 'decoder_blocks.3.mlp.fc1.weight', 'decoder_blocks.3.mlp.fc1.bias', 'decoder_blocks.3.mlp.fc2.weight', 'decoder_blocks.3.mlp.fc2.bias', 'decoder_blocks.4.norm1.weight', 'decoder_blocks.4.norm1.bias', 'decoder_blocks.4.attn.qkv.weight', 'decoder_blocks.4.attn.qkv.bias', 'decoder_blocks.4.attn.proj.weight', 'decoder_blocks.4.attn.proj.bias', 'decoder_blocks.4.norm2.weight', 'decoder_blocks.4.norm2.bias', 'decoder_blocks.4.mlp.fc1.weight', 'decoder_blocks.4.mlp.fc1.bias', 'decoder_blocks.4.mlp.fc2.weight', 'decoder_blocks.4.mlp.fc2.bias', 'decoder_blocks.5.norm1.weight', 'decoder_blocks.5.norm1.bias', 'decoder_blocks.5.attn.qkv.weight', 'decoder_blocks.5.attn.qkv.bias', 'decoder_blocks.5.attn.proj.weight', 'decoder_blocks.5.attn.proj.bias', 'decoder_blocks.5.norm2.weight', 'decoder_blocks.5.norm2.bias', 'decoder_blocks.5.mlp.fc1.weight', 'decoder_blocks.5.mlp.fc1.bias', 'decoder_blocks.5.mlp.fc2.weight', 'decoder_blocks.5.mlp.fc2.bias', 'decoder_blocks.6.norm1.weight', 'decoder_blocks.6.norm1.bias', 'decoder_blocks.6.attn.qkv.weight', 'decoder_blocks.6.attn.qkv.bias', 'decoder_blocks.6.attn.proj.weight', 'decoder_blocks.6.attn.proj.bias', 'decoder_blocks.6.norm2.weight', 'decoder_blocks.6.norm2.bias', 'decoder_blocks.6.mlp.fc1.weight', 'decoder_blocks.6.mlp.fc1.bias', 'decoder_blocks.6.mlp.fc2.weight', 'decoder_blocks.6.mlp.fc2.bias', 'decoder_blocks.7.norm1.weight', 'decoder_blocks.7.norm1.bias', 'decoder_blocks.7.attn.qkv.weight', 'decoder_blocks.7.attn.qkv.bias', 'decoder_blocks.7.attn.proj.weight', 'decoder_blocks.7.attn.proj.bias', 'decoder_blocks.7.norm2.weight', 'decoder_blocks.7.norm2.bias', 'decoder_blocks.7.mlp.fc1.weight', 'decoder_blocks.7.mlp.fc1.bias', 'decoder_blocks.7.mlp.fc2.weight', 'decoder_blocks.7.mlp.fc2.bias', 'decoder_norm.weight', 'decoder_norm.bias', 'decoder_pred.weight', 'decoder_pred.bias'], unexpected_keys=['head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'])
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+✅ Checkpoint diload: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+🖥️  GPU [Setelah load model terlatih] | Terpakai: 0.55GB | Reserved: 1.19GB | Bebas: 24.10GB / 25.30GB
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+📂 Loading 2 sampel dari Drive (split=test)...
+✅ 2 sampel siap dievaluasi.
+
+🎵 Menjalankan inpainting AudioMAE + CQT-Diff+...
+
+  Gap 100ms...
+
+  Gap 300ms...
+
+  Gap 500ms...
+
+  Gap 750ms...
+
+  Gap 1200ms...
+
+  Gap 1700ms...
+  Evaluating gap 100ms...
+⚠️ AquaTK PEAQb tidak tersedia/kompatibel; fallback ke ViSQOL/NSIM untuk PEAQ_ODG.
+fallback ke visqol
+fallback ke visqol
+Downloading: "https://github.com/harritaylor/torchvggish/releases/download/v0.1/vggish_pca_params-970ea276.pth" to /root/.cache/torch/hub/checkpoints/vggish_pca_params-970ea276.pth
+Downloading: "https://github.com/harritaylor/torchvggish/releases/download/v0.1/vggish-10086976.pth" to /root/.cache/torch/hub/checkpoints/vggish-10086976.pth
+  Evaluating gap 300ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 500ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 750ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1200ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1700ms...
+fallback ke visqol
+fallback ke visqol
+2026-05-18 11:40:37,640 | INFO | Evaluation timing saved for audiomae_cqtdiff: 97.13s
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+📋 Hasil audiomae_cqtdiff:
+ gap_ms    LSD         FAD  PEAQ_ODG
+    100 4.2371  22917.1070   -0.4419
+    300 5.2268  76611.5614   -0.6176
+    500 5.7091 121217.4768   -0.7974
+    750 6.1410 152988.8680   -0.7231
+   1200 6.2742 187814.4420   -0.9906
+   1700 6.4971 214874.8373   -1.2828
+💾 Hasil audiomae_cqtdiff disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/audiomae_cqtdiff_results.csv
+💾 Master file diupdate: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/all_results.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+🖥️  GPU [Sebelum clear] | Terpakai: 0.55GB | Reserved: 1.87GB | Bebas: 23.43GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.54GB | Reserved: 0.61GB | Bebas: 24.69GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+✅ audiomae_cqtdiff selesai!
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+⏭️ Skip training audiomae_maid: RUN_PHASE/RUN_MODELS tidak memilih blok ini.
+⏭️ Skip evaluasi audiomae_maid: RUN_PHASE/RUN_MODELS tidak memilih blok ini.
+📊 Model yang tersedia: ['audiomae_cqtdiff']
+
+======================================================================
+TABEL PERBANDINGAN LENGKAP
+======================================================================
+
+LSD (↓ lebih rendah = lebih baik):
+model   audiomae_cqtdiff
+gap_ms                  
+100               4.2371
+300               5.2268
+500               5.7091
+750               6.1410
+1200              6.2742
+1700              6.4971
+
+FAD (↓ lebih rendah = lebih baik):
+model   audiomae_cqtdiff
+gap_ms                  
+100           22917.1070
+300           76611.5614
+500          121217.4768
+750          152988.8680
+1200         187814.4420
+1700         214874.8373
+
+PEAQ_ODG (↑ mendekati 0 = lebih baik):
+model   audiomae_cqtdiff
+gap_ms                  
+100              -0.4419
+300              -0.6176
+500              -0.7974
+750              -0.7231
+1200             -0.9906
+1700             -1.2828
+
+💾 Grafik disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/plots/comparison_plot.png
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+✅ Semua hasil tersimpan di: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results
+Plots tersimpan di: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/plots
+2026-05-18 11:44:26,555 | INFO | Run started | stage=code_v3_final_run | run_id=20260518_114426
+2026-05-18 11:44:26,701 | INFO | Environment snapshot saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/gpu_environment.json
+Persistent logs: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs
+Environment snapshot: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/gpu_environment.json
+nvidia-smi -q log: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/nvidia_smi_q.txt
+
+Semua folder stage siap!
+Root folder stage: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run
+✅ Preprocessing sudah selesai sebelumnya, skip.
+   Set SKIP_IF_EXISTS = False untuk memaksa preprocessing ulang.
+Preprocessing timing saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/preprocessing_timing.csv
+✅ FiLMLayer berhasil didefinisikan!
+
+📋 Konfigurasi FiLM per kombinasi:
+   clap_cqtdiff: encoder_dim=512, decoder_feature_dim=256
+   clap_maid: encoder_dim=512, decoder_feature_dim=512
+   audiomae_cqtdiff: encoder_dim=768, decoder_feature_dim=256
+   audiomae_maid: encoder_dim=768, decoder_feature_dim=512
+   baseline_cqtdiff: tidak menggunakan FiLM
+✅ Fungsi evaluasi (LSD, FAD, PEAQ_ODG) berhasil didefinisikan!
+✅ Helper functions berhasil didefinisikan!
+✅ Dataset, DataLoader & shared utilities berhasil didefinisikan!
+   Gap durations: [100, 300, 500, 750, 1200, 1700] ms
+   AUTO_NUM_WORKERS: 2
+   ENCODER_PRECOMPUTE_NUM_WORKERS: 0
+   CPU thread env limit: 1
+✅ Training loop (reconstruction-based) berhasil didefinisikan!
+   Komponen: train_step_reconstruction, train_step_baseline,
+             train_model, train_baseline_model, validate_model
+✅ Shared hybrid training helpers berhasil didefinisikan!
+   Tersedia: builder encoder asli, adapter decoder asli, checkpoint helpers, trainer MAID,
+   run_hybrid_inpainting_evaluation, run_baseline_inpainting_evaluation
+
+Run selection:
+   phases: ['eval', 'summary', 'train']
+   models: ['audiomae_cqtdiff', 'audiomae_maid', 'baseline_cqtdiff', 'clap_cqtdiff', 'clap_maid']
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+🔧 Device: cuda
+GPU check: NVIDIA GeForce RTX 3090 | VRAM 23.56 GiB | batch_size=4
+? VRAM memenuhi estimasi minimum batch size 4.
+🖥️  GPU [Awal] | Terpakai: 0.00GB | Reserved: 0.00GB | Bebas: 25.30GB / 25.30GB
+
+🏋️ Training baseline CQT-Diff+ (tanpa encoder)...
+   Ini biar perbandingan fair: baseline juga trained,
+   bedanya cuma TANPA SSL encoder conditioning.
+
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+DataLoader config: batch_size=4, num_workers=2, pin_memory=True, prefetch=2, cache_audio=True
+   Cached 30 audio segments (20.2 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+🖥️  GPU [Sebelum training baseline] | Terpakai: 0.07GB | Reserved: 0.21GB | Bebas: 25.08GB / 25.30GB
+  Epoch 1/5 | Loss: 0.329232 | LR: 1.00e-04 | Time: 28.7s
+  Profile baseline_cqtdiff epoch 1: data_wait=0.20s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=42.73s | gpu_active_share~=99.4% | peak_vram=1.96GB | nvidia-smi gpu=100% mem_util=11% mem=3478/24576MB
+2026-05-18 11:44:58,379 | INFO | baseline_cqtdiff epoch=1 train_loss=0.329232
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_latest.pt
+2026-05-18 11:44:59,111 | INFO | Training history saved for baseline_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/baseline_cqtdiff_training_history.csv
+  Epoch 2/5 | Loss: 0.285211 | LR: 9.05e-05 | Time: 27.6s
+  Profile baseline_cqtdiff epoch 2: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=27.47s | gpu_active_share~=99.7% | peak_vram=1.96GB | nvidia-smi gpu=100% mem_util=48% mem=3478/24576MB
+2026-05-18 11:45:26,751 | INFO | baseline_cqtdiff epoch=2 train_loss=0.285211
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_latest.pt
+2026-05-18 11:45:26,959 | INFO | Training history saved for baseline_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/baseline_cqtdiff_training_history.csv
+  Epoch 3/5 | Loss: 0.277319 | LR: 6.55e-05 | Time: 28.4s
+  Profile baseline_cqtdiff epoch 3: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=28.37s | gpu_active_share~=99.7% | peak_vram=1.96GB | nvidia-smi gpu=100% mem_util=20% mem=3478/24576MB
+2026-05-18 11:45:55,402 | INFO | baseline_cqtdiff epoch=3 train_loss=0.277319
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_latest.pt
+2026-05-18 11:45:55,627 | INFO | Training history saved for baseline_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/baseline_cqtdiff_training_history.csv
+  Epoch 4/5 | Loss: 0.271839 | LR: 3.45e-05 | Time: 28.3s
+  Profile baseline_cqtdiff epoch 4: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=27.80s | gpu_active_share~=99.7% | peak_vram=1.96GB | nvidia-smi gpu=50% mem_util=11% mem=3478/24576MB
+2026-05-18 11:46:23,979 | INFO | baseline_cqtdiff epoch=4 train_loss=0.271839
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_latest.pt
+2026-05-18 11:46:24,193 | INFO | Training history saved for baseline_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/baseline_cqtdiff_training_history.csv
+  Epoch 5/5 | Loss: 0.271786 | LR: 9.55e-06 | Time: 27.6s
+  Profile baseline_cqtdiff epoch 5: data_wait=0.05s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=27.34s | gpu_active_share~=99.7% | peak_vram=1.96GB | nvidia-smi gpu=100% mem_util=45% mem=3478/24576MB
+  Val Loss: 0.242583
+2026-05-18 11:47:00,748 | INFO | baseline_cqtdiff epoch=5 train_loss=0.271786 val_loss=0.242583
+  Best checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_best.pt
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_latest.pt
+2026-05-18 11:47:01,043 | INFO | Training history saved for baseline_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/baseline_cqtdiff_training_history.csv
+
+Training time this run baseline_cqtdiff: 2m 31s
+Total recorded training time baseline_cqtdiff: 2m 20s
+Average epoch time baseline_cqtdiff: 28.1s
+2026-05-18 11:47:01,049 | INFO | Training timing saved for baseline_cqtdiff: 140.63s
+Timing summary updated: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/training_timing_summary.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+Baseline training complete. Best val loss: 0.242583
+🖥️  GPU [Sebelum clear] | Terpakai: 0.02GB | Reserved: 3.29GB | Bebas: 22.01GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.02GB | Reserved: 0.19GB | Bebas: 25.11GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+📥 Loading trained baseline untuk evaluasi...
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+✅ Baseline checkpoint diload: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/baseline_cqtdiff/baseline_cqtdiff_best.pt
+🖥️  GPU [Setelah load baseline] | Terpakai: 0.09GB | Reserved: 0.38GB | Bebas: 24.92GB / 25.30GB
+
+📊 Mengevaluasi baseline...
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+📂 Loading 2 sampel dari Drive (split=test)...
+✅ 2 sampel siap dievaluasi.
+
+🎵 Menjalankan baseline CQT-Diff+ (tanpa SSL encoder)...
+
+  Gap 100ms...
+
+  Gap 300ms...
+
+  Gap 500ms...
+
+  Gap 750ms...
+
+  Gap 1200ms...
+
+  Gap 1700ms...
+  Evaluating gap 100ms...
+⚠️ AquaTK PEAQb tidak tersedia/kompatibel; fallback ke ViSQOL/NSIM untuk PEAQ_ODG.
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 300ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 500ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 750ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1200ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1700ms...
+fallback ke visqol
+fallback ke visqol
+2026-05-18 11:48:33,648 | INFO | Evaluation timing saved for baseline_cqtdiff: 91.77s
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+📋 Hasil evaluasi BASELINE (CQT-Diff+ standalone, trained tanpa encoder):
+ gap_ms    LSD         FAD  PEAQ_ODG
+    100 4.3117  22445.7775   -0.4062
+    300 5.3470  74512.2052   -0.5667
+    500 5.8559 130117.2256   -0.7898
+    750 6.3903 153171.3356   -0.7348
+   1200 6.5466 166658.6453   -0.9633
+   1700 6.7945 221066.6065   -1.1767
+💾 Hasil baseline_cqtdiff disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/baseline_cqtdiff_results.csv
+💾 Master file diupdate: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/all_results.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+🧹 Membersihkan memori GPU...
+🖥️  GPU [Sebelum clear] | Terpakai: 0.09GB | Reserved: 0.93GB | Bebas: 24.37GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.09GB | Reserved: 0.25GB | Bebas: 25.04GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+✅ BASELINE baseline_cqtdiff selesai!
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+🔧 Device: cuda
+GPU check: NVIDIA GeForce RTX 3090 | VRAM 23.56 GiB | batch_size=4
+? VRAM memenuhi estimasi minimum batch size 4.
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+DataLoader config: batch_size=4, num_workers=2, pin_memory=True, prefetch=2, cache_audio=True
+   Cached 30 audio segments (20.2 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Precomputing encoder latents [train] (180 items, num_workers=0)...
+   Saved encoder latents [train] in 53.3s: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/clap_train_n180_sr44100_gaps100-300-500-750-1200-1700.pt
+   Precomputing encoder latents [val] (60 items, num_workers=0)...
+   Saved encoder latents [val] in 17.8s: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/clap_val_n60_sr44100_gaps100-300-500-750-1200-1700.pt
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+🖥️  GPU [Sebelum training] | Terpakai: 0.47GB | Reserved: 0.67GB | Bebas: 24.62GB / 25.30GB
+  Epoch 1/5 | Loss: 0.337277 | LR: 1.00e-04 | Time: 32.3s
+  Profile clap_cqtdiff epoch 1: data_wait=0.36s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=26.56s | gpu_active_share~=98.5% | peak_vram=2.32GB | nvidia-smi gpu=100% mem_util=47% mem=3884/24576MB
+2026-05-18 11:50:27,366 | INFO | clap_cqtdiff epoch=1 train_loss=0.337277
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_latest.pt
+2026-05-18 11:50:27,636 | INFO | Training history saved for clap_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_cqtdiff_training_history.csv
+  Epoch 2/5 | Loss: 0.285688 | LR: 9.05e-05 | Time: 28.0s
+  Profile clap_cqtdiff epoch 2: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=29.49s | gpu_active_share~=99.7% | peak_vram=2.32GB | nvidia-smi gpu=100% mem_util=43% mem=3884/24576MB
+2026-05-18 11:50:55,693 | INFO | clap_cqtdiff epoch=2 train_loss=0.285688
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_latest.pt
+2026-05-18 11:50:55,906 | INFO | Training history saved for clap_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_cqtdiff_training_history.csv
+  Epoch 3/5 | Loss: 0.278439 | LR: 6.55e-05 | Time: 27.4s
+  Profile clap_cqtdiff epoch 3: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=28.79s | gpu_active_share~=99.7% | peak_vram=2.32GB | nvidia-smi gpu=100% mem_util=15% mem=3884/24576MB
+2026-05-18 11:51:23,385 | INFO | clap_cqtdiff epoch=3 train_loss=0.278439
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_latest.pt
+2026-05-18 11:51:23,611 | INFO | Training history saved for clap_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_cqtdiff_training_history.csv
+  Epoch 4/5 | Loss: 0.275499 | LR: 3.45e-05 | Time: 27.3s
+  Profile clap_cqtdiff epoch 4: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=27.80s | gpu_active_share~=99.7% | peak_vram=2.32GB | nvidia-smi gpu=70% mem_util=18% mem=3884/24576MB
+2026-05-18 11:51:50,917 | INFO | clap_cqtdiff epoch=4 train_loss=0.275499
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_latest.pt
+2026-05-18 11:51:51,140 | INFO | Training history saved for clap_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_cqtdiff_training_history.csv
+  Epoch 5/5 | Loss: 0.268705 | LR: 9.55e-06 | Time: 27.5s
+  Profile clap_cqtdiff epoch 5: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=26.76s | gpu_active_share~=99.7% | peak_vram=2.32GB | nvidia-smi gpu=100% mem_util=58% mem=3884/24576MB
+  Val Loss: 0.241863
+2026-05-18 11:52:27,956 | INFO | clap_cqtdiff epoch=5 train_loss=0.268705 val_loss=0.241863
+  Best checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_best.pt
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_latest.pt
+2026-05-18 11:52:28,274 | INFO | Training history saved for clap_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_cqtdiff_training_history.csv
+
+Training time this run clap_cqtdiff: 2m 33s
+Total recorded training time clap_cqtdiff: 2m 22s
+Average epoch time clap_cqtdiff: 28.5s
+2026-05-18 11:52:28,280 | INFO | Training timing saved for clap_cqtdiff: 142.48s
+Timing summary updated: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/training_timing_summary.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+Training complete. Best val loss: 0.241863
+✅ Training selesai. Checkpoint siap dipakai: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_best.pt
+🖥️  GPU [Sebelum clear] | Terpakai: 0.48GB | Reserved: 3.71GB | Bebas: 21.59GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.48GB | Reserved: 0.51GB | Bebas: 24.79GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+🖥️  GPU [Awal] | Terpakai: 0.41GB | Reserved: 0.51GB | Bebas: 24.79GB / 25.30GB
+📦 Menggunakan checkpoint: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_best.pt
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+✅ Checkpoint diload: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_cqtdiff/clap_cqtdiff_best.pt
+🖥️  GPU [Setelah load model terlatih] | Terpakai: 0.48GB | Reserved: 0.92GB | Bebas: 24.38GB / 25.30GB
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+📂 Loading 2 sampel dari Drive (split=test)...
+✅ 2 sampel siap dievaluasi.
+
+🎵 Menjalankan inpainting CLAP + CQT-Diff+...
+
+  Gap 100ms...
+
+  Gap 300ms...
+
+  Gap 500ms...
+
+  Gap 750ms...
+
+  Gap 1200ms...
+
+  Gap 1700ms...
+  Evaluating gap 100ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 300ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 500ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 750ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1200ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1700ms...
+fallback ke visqol
+fallback ke visqol
+2026-05-18 11:54:10,868 | INFO | Evaluation timing saved for clap_cqtdiff: 98.47s
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+📋 Hasil clap_cqtdiff:
+ gap_ms    LSD         FAD  PEAQ_ODG
+    100 4.2113  24051.8892   -0.4390
+    300 5.1838  61412.0755   -0.6083
+    500 5.6437 133588.6765   -0.7799
+    750 6.1267 171069.8897   -0.7127
+   1200 6.3146 184481.5047   -0.9481
+   1700 6.5427 217167.0127   -1.2898
+💾 Hasil clap_cqtdiff disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/clap_cqtdiff_results.csv
+💾 Master file diupdate: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/all_results.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+🖥️  GPU [Sebelum clear] | Terpakai: 0.48GB | Reserved: 1.47GB | Bebas: 23.83GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.48GB | Reserved: 0.67GB | Bebas: 24.63GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+✅ clap_cqtdiff selesai!
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+🔧 Device: cuda
+GPU check: NVIDIA GeForce RTX 3090 | VRAM 23.56 GiB | batch_size=4
+? VRAM memenuhi estimasi minimum batch size 4.
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+DataLoader config: batch_size=4, num_workers=2, pin_memory=True, prefetch=2, cache_audio=True
+   Cached 30 audio segments (20.2 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Loading cached encoder latents [train]: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/clap_train_n180_sr44100_gaps100-300-500-750-1200-1700.pt
+   Loading cached encoder latents [val]: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/clap_val_n60_sr44100_gaps100-300-500-750-1200-1700.pt
+DDPM-Midi2Performance checkpoint tidak ditemukan; MAID memakai arsitektur asli dan akan dilatih dari awal.
+MAID original DDPM-Midi2Performance loaded via adapter.
+🖥️  GPU [Sebelum training] | Terpakai: 0.58GB | Reserved: 0.81GB | Bebas: 24.48GB / 25.30GB
+  Epoch 1/5 | Loss: 0.602631 | LR: 1.00e-04 | Time: 1m 24s
+  Profile clap_maid epoch 1: data_wait=0.33s | h2d~=0.05s | preproc/encoder~=0.00s | gpu_compute~=111.75s | gpu_active_share~=99.7% | peak_vram=2.95GB | nvidia-smi gpu=0% mem_util=0% mem=3550/24576MB
+2026-05-18 11:55:42,781 | INFO | clap_maid epoch=1 train_loss=0.602631
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_latest.pt
+2026-05-18 11:55:43,239 | INFO | Training history saved for clap_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_maid_training_history.csv
+  Epoch 2/5 | Loss: 0.230903 | LR: 9.05e-05 | Time: 1m 23s
+  Profile clap_maid epoch 2: data_wait=0.07s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=79.45s | gpu_active_share~=99.9% | peak_vram=2.95GB | nvidia-smi gpu=0% mem_util=0% mem=3550/24576MB
+2026-05-18 11:57:06,668 | INFO | clap_maid epoch=2 train_loss=0.230903
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_latest.pt
+2026-05-18 11:57:07,114 | INFO | Training history saved for clap_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_maid_training_history.csv
+  Epoch 3/5 | Loss: 0.168784 | LR: 6.55e-05 | Time: 1m 23s
+  Profile clap_maid epoch 3: data_wait=0.08s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=82.27s | gpu_active_share~=99.9% | peak_vram=2.95GB | nvidia-smi gpu=0% mem_util=0% mem=3550/24576MB
+2026-05-18 11:58:30,785 | INFO | clap_maid epoch=3 train_loss=0.168784
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_latest.pt
+2026-05-18 11:58:31,204 | INFO | Training history saved for clap_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_maid_training_history.csv
+  Epoch 4/5 | Loss: 0.146784 | LR: 3.45e-05 | Time: 1m 24s
+  Profile clap_maid epoch 4: data_wait=0.06s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=83.20s | gpu_active_share~=99.9% | peak_vram=2.95GB | nvidia-smi gpu=6% mem_util=4% mem=3550/24576MB
+2026-05-18 11:59:55,561 | INFO | clap_maid epoch=4 train_loss=0.146784
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_latest.pt
+2026-05-18 11:59:55,969 | INFO | Training history saved for clap_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_maid_training_history.csv
+  Epoch 5/5 | Loss: 0.137727 | LR: 9.55e-06 | Time: 1m 23s
+  Profile clap_maid epoch 5: data_wait=0.08s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=86.02s | gpu_active_share~=99.9% | peak_vram=2.95GB | nvidia-smi gpu=0% mem_util=0% mem=3552/24576MB
+  Val Loss: 0.148121
+2026-05-18 12:01:48,350 | INFO | clap_maid epoch=5 train_loss=0.137727 val_loss=0.148121
+  Best checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_best.pt
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_latest.pt
+2026-05-18 12:01:49,107 | INFO | Training history saved for clap_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/clap_maid_training_history.csv
+
+Training time this run clap_maid: 7m 31s
+Total recorded training time clap_maid: 7m 00s
+Average epoch time clap_maid: 1m 24s
+2026-05-18 12:01:49,113 | INFO | Training timing saved for clap_maid: 420.31s
+Timing summary updated: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/training_timing_summary.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+MAID training complete. Best val loss: 0.148121
+✅ Training selesai. Checkpoint siap dipakai: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_best.pt
+🖥️  GPU [Sebelum clear] | Terpakai: 0.68GB | Reserved: 3.44GB | Bebas: 21.85GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.68GB | Reserved: 1.02GB | Bebas: 24.28GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+🖥️  GPU [Awal] | Terpakai: 0.47GB | Reserved: 1.02GB | Bebas: 24.28GB / 25.30GB
+📦 Menggunakan checkpoint: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_best.pt
+DDPM-Midi2Performance checkpoint tidak ditemukan; MAID memakai arsitektur asli dan akan dilatih dari awal.
+MAID original DDPM-Midi2Performance loaded via adapter.
+✅ Checkpoint diload: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/clap_maid/clap_maid_best.pt
+🖥️  GPU [Setelah load model terlatih] | Terpakai: 0.58GB | Reserved: 1.10GB | Bebas: 24.20GB / 25.30GB
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+📂 Loading 2 sampel dari Drive (split=test)...
+✅ 2 sampel siap dievaluasi.
+
+🎵 Menjalankan inpainting CLAP + MAID...
+
+  Gap 100ms...
+
+  Gap 300ms...
+
+  Gap 500ms...
+
+  Gap 750ms...
+
+  Gap 1200ms...
+
+  Gap 1700ms...
+  Evaluating gap 100ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 300ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 500ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 750ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1200ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1700ms...
+fallback ke visqol
+fallback ke visqol
+2026-05-18 12:04:03,927 | INFO | Evaluation timing saved for clap_maid: 127.64s
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+📋 Hasil clap_maid:
+ gap_ms     LSD         FAD  PEAQ_ODG
+    100 12.3387  50947.7849   -0.4767
+    300 16.7528 140185.9336   -0.7480
+    500 16.7271 227163.6258   -0.7701
+    750 17.8786 236300.0848   -0.7942
+   1200 18.1259 249629.4474   -0.9086
+   1700 18.4253 253423.2186   -1.1178
+💾 Hasil clap_maid disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/clap_maid_results.csv
+💾 Master file diupdate: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/all_results.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+🖥️  GPU [Sebelum clear] | Terpakai: 0.58GB | Reserved: 1.10GB | Bebas: 24.20GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 0.58GB | Reserved: 0.74GB | Bebas: 24.56GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+✅ clap_maid selesai!
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+🔧 Device: cuda
+GPU check: NVIDIA GeForce RTX 3090 | VRAM 23.56 GiB | batch_size=4
+? VRAM memenuhi estimasi minimum batch size 4.
+♻️ FORCE_RETRAIN aktif. Checkpoint lama akan ditimpa: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+DataLoader config: batch_size=4, num_workers=2, pin_memory=True, prefetch=2, cache_audio=True
+   Cached 30 audio segments (20.2 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+AudioMAE asli dari repo berhasil diload: /workspace/ssl-diffusion-audio-inpainting/external/AudioMAE/ckpt/pretrained.pth
+AudioMAE load_state_dict: _IncompatibleKeys(missing_keys=['mask_token', 'decoder_pos_embed', 'norm.weight', 'norm.bias', 'decoder_embed.weight', 'decoder_embed.bias', 'decoder_blocks.0.norm1.weight', 'decoder_blocks.0.norm1.bias', 'decoder_blocks.0.attn.qkv.weight', 'decoder_blocks.0.attn.qkv.bias', 'decoder_blocks.0.attn.proj.weight', 'decoder_blocks.0.attn.proj.bias', 'decoder_blocks.0.norm2.weight', 'decoder_blocks.0.norm2.bias', 'decoder_blocks.0.mlp.fc1.weight', 'decoder_blocks.0.mlp.fc1.bias', 'decoder_blocks.0.mlp.fc2.weight', 'decoder_blocks.0.mlp.fc2.bias', 'decoder_blocks.1.norm1.weight', 'decoder_blocks.1.norm1.bias', 'decoder_blocks.1.attn.qkv.weight', 'decoder_blocks.1.attn.qkv.bias', 'decoder_blocks.1.attn.proj.weight', 'decoder_blocks.1.attn.proj.bias', 'decoder_blocks.1.norm2.weight', 'decoder_blocks.1.norm2.bias', 'decoder_blocks.1.mlp.fc1.weight', 'decoder_blocks.1.mlp.fc1.bias', 'decoder_blocks.1.mlp.fc2.weight', 'decoder_blocks.1.mlp.fc2.bias', 'decoder_blocks.2.norm1.weight', 'decoder_blocks.2.norm1.bias', 'decoder_blocks.2.attn.qkv.weight', 'decoder_blocks.2.attn.qkv.bias', 'decoder_blocks.2.attn.proj.weight', 'decoder_blocks.2.attn.proj.bias', 'decoder_blocks.2.norm2.weight', 'decoder_blocks.2.norm2.bias', 'decoder_blocks.2.mlp.fc1.weight', 'decoder_blocks.2.mlp.fc1.bias', 'decoder_blocks.2.mlp.fc2.weight', 'decoder_blocks.2.mlp.fc2.bias', 'decoder_blocks.3.norm1.weight', 'decoder_blocks.3.norm1.bias', 'decoder_blocks.3.attn.qkv.weight', 'decoder_blocks.3.attn.qkv.bias', 'decoder_blocks.3.attn.proj.weight', 'decoder_blocks.3.attn.proj.bias', 'decoder_blocks.3.norm2.weight', 'decoder_blocks.3.norm2.bias', 'decoder_blocks.3.mlp.fc1.weight', 'decoder_blocks.3.mlp.fc1.bias', 'decoder_blocks.3.mlp.fc2.weight', 'decoder_blocks.3.mlp.fc2.bias', 'decoder_blocks.4.norm1.weight', 'decoder_blocks.4.norm1.bias', 'decoder_blocks.4.attn.qkv.weight', 'decoder_blocks.4.attn.qkv.bias', 'decoder_blocks.4.attn.proj.weight', 'decoder_blocks.4.attn.proj.bias', 'decoder_blocks.4.norm2.weight', 'decoder_blocks.4.norm2.bias', 'decoder_blocks.4.mlp.fc1.weight', 'decoder_blocks.4.mlp.fc1.bias', 'decoder_blocks.4.mlp.fc2.weight', 'decoder_blocks.4.mlp.fc2.bias', 'decoder_blocks.5.norm1.weight', 'decoder_blocks.5.norm1.bias', 'decoder_blocks.5.attn.qkv.weight', 'decoder_blocks.5.attn.qkv.bias', 'decoder_blocks.5.attn.proj.weight', 'decoder_blocks.5.attn.proj.bias', 'decoder_blocks.5.norm2.weight', 'decoder_blocks.5.norm2.bias', 'decoder_blocks.5.mlp.fc1.weight', 'decoder_blocks.5.mlp.fc1.bias', 'decoder_blocks.5.mlp.fc2.weight', 'decoder_blocks.5.mlp.fc2.bias', 'decoder_blocks.6.norm1.weight', 'decoder_blocks.6.norm1.bias', 'decoder_blocks.6.attn.qkv.weight', 'decoder_blocks.6.attn.qkv.bias', 'decoder_blocks.6.attn.proj.weight', 'decoder_blocks.6.attn.proj.bias', 'decoder_blocks.6.norm2.weight', 'decoder_blocks.6.norm2.bias', 'decoder_blocks.6.mlp.fc1.weight', 'decoder_blocks.6.mlp.fc1.bias', 'decoder_blocks.6.mlp.fc2.weight', 'decoder_blocks.6.mlp.fc2.bias', 'decoder_blocks.7.norm1.weight', 'decoder_blocks.7.norm1.bias', 'decoder_blocks.7.attn.qkv.weight', 'decoder_blocks.7.attn.qkv.bias', 'decoder_blocks.7.attn.proj.weight', 'decoder_blocks.7.attn.proj.bias', 'decoder_blocks.7.norm2.weight', 'decoder_blocks.7.norm2.bias', 'decoder_blocks.7.mlp.fc1.weight', 'decoder_blocks.7.mlp.fc1.bias', 'decoder_blocks.7.mlp.fc2.weight', 'decoder_blocks.7.mlp.fc2.bias', 'decoder_norm.weight', 'decoder_norm.bias', 'decoder_pred.weight', 'decoder_pred.bias'], unexpected_keys=['head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'])
+   Loading cached encoder latents [train]: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/audiomae_train_n180_sr44100_gaps100-300-500-750-1200-1700.pt
+   Loading cached encoder latents [val]: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/audiomae_val_n60_sr44100_gaps100-300-500-750-1200-1700.pt
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+🖥️  GPU [Sebelum training] | Terpakai: 1.03GB | Reserved: 1.19GB | Bebas: 24.10GB / 25.30GB
+Resuming audiomae_cqtdiff from epoch 6 using /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_latest.pt
+audiomae_cqtdiff already reached 5 epochs. No additional training needed.
+2026-05-18 12:04:09,432 | INFO | Training history saved for audiomae_cqtdiff: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_cqtdiff_training_history.csv
+✅ Training selesai. Checkpoint siap dipakai: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+🖥️  GPU [Sebelum clear] | Terpakai: 1.03GB | Reserved: 1.19GB | Bebas: 24.10GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 1.03GB | Reserved: 1.07GB | Bebas: 24.23GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+🖥️  GPU [Awal] | Terpakai: 0.96GB | Reserved: 1.07GB | Bebas: 24.23GB / 25.30GB
+📦 Menggunakan checkpoint: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+AudioMAE asli dari repo berhasil diload: /workspace/ssl-diffusion-audio-inpainting/external/AudioMAE/ckpt/pretrained.pth
+AudioMAE load_state_dict: _IncompatibleKeys(missing_keys=['mask_token', 'decoder_pos_embed', 'norm.weight', 'norm.bias', 'decoder_embed.weight', 'decoder_embed.bias', 'decoder_blocks.0.norm1.weight', 'decoder_blocks.0.norm1.bias', 'decoder_blocks.0.attn.qkv.weight', 'decoder_blocks.0.attn.qkv.bias', 'decoder_blocks.0.attn.proj.weight', 'decoder_blocks.0.attn.proj.bias', 'decoder_blocks.0.norm2.weight', 'decoder_blocks.0.norm2.bias', 'decoder_blocks.0.mlp.fc1.weight', 'decoder_blocks.0.mlp.fc1.bias', 'decoder_blocks.0.mlp.fc2.weight', 'decoder_blocks.0.mlp.fc2.bias', 'decoder_blocks.1.norm1.weight', 'decoder_blocks.1.norm1.bias', 'decoder_blocks.1.attn.qkv.weight', 'decoder_blocks.1.attn.qkv.bias', 'decoder_blocks.1.attn.proj.weight', 'decoder_blocks.1.attn.proj.bias', 'decoder_blocks.1.norm2.weight', 'decoder_blocks.1.norm2.bias', 'decoder_blocks.1.mlp.fc1.weight', 'decoder_blocks.1.mlp.fc1.bias', 'decoder_blocks.1.mlp.fc2.weight', 'decoder_blocks.1.mlp.fc2.bias', 'decoder_blocks.2.norm1.weight', 'decoder_blocks.2.norm1.bias', 'decoder_blocks.2.attn.qkv.weight', 'decoder_blocks.2.attn.qkv.bias', 'decoder_blocks.2.attn.proj.weight', 'decoder_blocks.2.attn.proj.bias', 'decoder_blocks.2.norm2.weight', 'decoder_blocks.2.norm2.bias', 'decoder_blocks.2.mlp.fc1.weight', 'decoder_blocks.2.mlp.fc1.bias', 'decoder_blocks.2.mlp.fc2.weight', 'decoder_blocks.2.mlp.fc2.bias', 'decoder_blocks.3.norm1.weight', 'decoder_blocks.3.norm1.bias', 'decoder_blocks.3.attn.qkv.weight', 'decoder_blocks.3.attn.qkv.bias', 'decoder_blocks.3.attn.proj.weight', 'decoder_blocks.3.attn.proj.bias', 'decoder_blocks.3.norm2.weight', 'decoder_blocks.3.norm2.bias', 'decoder_blocks.3.mlp.fc1.weight', 'decoder_blocks.3.mlp.fc1.bias', 'decoder_blocks.3.mlp.fc2.weight', 'decoder_blocks.3.mlp.fc2.bias', 'decoder_blocks.4.norm1.weight', 'decoder_blocks.4.norm1.bias', 'decoder_blocks.4.attn.qkv.weight', 'decoder_blocks.4.attn.qkv.bias', 'decoder_blocks.4.attn.proj.weight', 'decoder_blocks.4.attn.proj.bias', 'decoder_blocks.4.norm2.weight', 'decoder_blocks.4.norm2.bias', 'decoder_blocks.4.mlp.fc1.weight', 'decoder_blocks.4.mlp.fc1.bias', 'decoder_blocks.4.mlp.fc2.weight', 'decoder_blocks.4.mlp.fc2.bias', 'decoder_blocks.5.norm1.weight', 'decoder_blocks.5.norm1.bias', 'decoder_blocks.5.attn.qkv.weight', 'decoder_blocks.5.attn.qkv.bias', 'decoder_blocks.5.attn.proj.weight', 'decoder_blocks.5.attn.proj.bias', 'decoder_blocks.5.norm2.weight', 'decoder_blocks.5.norm2.bias', 'decoder_blocks.5.mlp.fc1.weight', 'decoder_blocks.5.mlp.fc1.bias', 'decoder_blocks.5.mlp.fc2.weight', 'decoder_blocks.5.mlp.fc2.bias', 'decoder_blocks.6.norm1.weight', 'decoder_blocks.6.norm1.bias', 'decoder_blocks.6.attn.qkv.weight', 'decoder_blocks.6.attn.qkv.bias', 'decoder_blocks.6.attn.proj.weight', 'decoder_blocks.6.attn.proj.bias', 'decoder_blocks.6.norm2.weight', 'decoder_blocks.6.norm2.bias', 'decoder_blocks.6.mlp.fc1.weight', 'decoder_blocks.6.mlp.fc1.bias', 'decoder_blocks.6.mlp.fc2.weight', 'decoder_blocks.6.mlp.fc2.bias', 'decoder_blocks.7.norm1.weight', 'decoder_blocks.7.norm1.bias', 'decoder_blocks.7.attn.qkv.weight', 'decoder_blocks.7.attn.qkv.bias', 'decoder_blocks.7.attn.proj.weight', 'decoder_blocks.7.attn.proj.bias', 'decoder_blocks.7.norm2.weight', 'decoder_blocks.7.norm2.bias', 'decoder_blocks.7.mlp.fc1.weight', 'decoder_blocks.7.mlp.fc1.bias', 'decoder_blocks.7.mlp.fc2.weight', 'decoder_blocks.7.mlp.fc2.bias', 'decoder_norm.weight', 'decoder_norm.bias', 'decoder_pred.weight', 'decoder_pred.bias'], unexpected_keys=['head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'])
+CQT-Diff+ original weights loaded: /workspace/ssl-diffusion-audio-inpainting/external/CQTdiff/experiments/cqt/cqt_weights.pt
+CQT-Diff+ load_state_dict: <All keys matched successfully>
+CQT-Diff+ original loaded via official adapter.
+✅ Checkpoint diload: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_cqtdiff/audiomae_cqtdiff_best.pt
+🖥️  GPU [Setelah load model terlatih] | Terpakai: 1.03GB | Reserved: 1.65GB | Bebas: 23.64GB / 25.30GB
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+📂 Loading 2 sampel dari Drive (split=test)...
+✅ 2 sampel siap dievaluasi.
+
+🎵 Menjalankan inpainting AudioMAE + CQT-Diff+...
+
+  Gap 100ms...
+
+  Gap 300ms...
+
+  Gap 500ms...
+
+  Gap 750ms...
+
+  Gap 1200ms...
+
+  Gap 1700ms...
+  Evaluating gap 100ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 300ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 500ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 750ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1200ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1700ms...
+fallback ke visqol
+fallback ke visqol
+2026-05-18 12:06:27,584 | INFO | Evaluation timing saved for audiomae_cqtdiff: 135.09s
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+📋 Hasil audiomae_cqtdiff:
+ gap_ms    LSD         FAD  PEAQ_ODG
+    100 4.2371  22917.1070   -0.4419
+    300 5.2268  76611.5614   -0.6176
+    500 5.7091 121217.4768   -0.7974
+    750 6.1410 152988.8680   -0.7231
+   1200 6.2742 187814.4420   -0.9906
+   1700 6.4971 214874.8373   -1.2828
+💾 Hasil audiomae_cqtdiff disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/audiomae_cqtdiff_results.csv
+💾 Master file diupdate: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/all_results.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+🖥️  GPU [Sebelum clear] | Terpakai: 1.03GB | Reserved: 2.21GB | Bebas: 23.09GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 1.03GB | Reserved: 1.28GB | Bebas: 24.02GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+✅ audiomae_cqtdiff selesai!
+Config stage: code_v3_final_run | dataset_fraction=3% | batch_size=4 | epochs=5
+🔧 Device: cuda
+GPU check: NVIDIA GeForce RTX 3090 | VRAM 23.56 GiB | batch_size=4
+? VRAM memenuhi estimasi minimum batch size 4.
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+DataLoader config: batch_size=4, num_workers=2, pin_memory=True, prefetch=2, cache_audio=True
+   Cached 30 audio segments (20.2 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+   Cached 10 audio segments (6.7 MB) in 0.0s
+AudioMAE asli dari repo berhasil diload: /workspace/ssl-diffusion-audio-inpainting/external/AudioMAE/ckpt/pretrained.pth
+AudioMAE load_state_dict: _IncompatibleKeys(missing_keys=['mask_token', 'decoder_pos_embed', 'norm.weight', 'norm.bias', 'decoder_embed.weight', 'decoder_embed.bias', 'decoder_blocks.0.norm1.weight', 'decoder_blocks.0.norm1.bias', 'decoder_blocks.0.attn.qkv.weight', 'decoder_blocks.0.attn.qkv.bias', 'decoder_blocks.0.attn.proj.weight', 'decoder_blocks.0.attn.proj.bias', 'decoder_blocks.0.norm2.weight', 'decoder_blocks.0.norm2.bias', 'decoder_blocks.0.mlp.fc1.weight', 'decoder_blocks.0.mlp.fc1.bias', 'decoder_blocks.0.mlp.fc2.weight', 'decoder_blocks.0.mlp.fc2.bias', 'decoder_blocks.1.norm1.weight', 'decoder_blocks.1.norm1.bias', 'decoder_blocks.1.attn.qkv.weight', 'decoder_blocks.1.attn.qkv.bias', 'decoder_blocks.1.attn.proj.weight', 'decoder_blocks.1.attn.proj.bias', 'decoder_blocks.1.norm2.weight', 'decoder_blocks.1.norm2.bias', 'decoder_blocks.1.mlp.fc1.weight', 'decoder_blocks.1.mlp.fc1.bias', 'decoder_blocks.1.mlp.fc2.weight', 'decoder_blocks.1.mlp.fc2.bias', 'decoder_blocks.2.norm1.weight', 'decoder_blocks.2.norm1.bias', 'decoder_blocks.2.attn.qkv.weight', 'decoder_blocks.2.attn.qkv.bias', 'decoder_blocks.2.attn.proj.weight', 'decoder_blocks.2.attn.proj.bias', 'decoder_blocks.2.norm2.weight', 'decoder_blocks.2.norm2.bias', 'decoder_blocks.2.mlp.fc1.weight', 'decoder_blocks.2.mlp.fc1.bias', 'decoder_blocks.2.mlp.fc2.weight', 'decoder_blocks.2.mlp.fc2.bias', 'decoder_blocks.3.norm1.weight', 'decoder_blocks.3.norm1.bias', 'decoder_blocks.3.attn.qkv.weight', 'decoder_blocks.3.attn.qkv.bias', 'decoder_blocks.3.attn.proj.weight', 'decoder_blocks.3.attn.proj.bias', 'decoder_blocks.3.norm2.weight', 'decoder_blocks.3.norm2.bias', 'decoder_blocks.3.mlp.fc1.weight', 'decoder_blocks.3.mlp.fc1.bias', 'decoder_blocks.3.mlp.fc2.weight', 'decoder_blocks.3.mlp.fc2.bias', 'decoder_blocks.4.norm1.weight', 'decoder_blocks.4.norm1.bias', 'decoder_blocks.4.attn.qkv.weight', 'decoder_blocks.4.attn.qkv.bias', 'decoder_blocks.4.attn.proj.weight', 'decoder_blocks.4.attn.proj.bias', 'decoder_blocks.4.norm2.weight', 'decoder_blocks.4.norm2.bias', 'decoder_blocks.4.mlp.fc1.weight', 'decoder_blocks.4.mlp.fc1.bias', 'decoder_blocks.4.mlp.fc2.weight', 'decoder_blocks.4.mlp.fc2.bias', 'decoder_blocks.5.norm1.weight', 'decoder_blocks.5.norm1.bias', 'decoder_blocks.5.attn.qkv.weight', 'decoder_blocks.5.attn.qkv.bias', 'decoder_blocks.5.attn.proj.weight', 'decoder_blocks.5.attn.proj.bias', 'decoder_blocks.5.norm2.weight', 'decoder_blocks.5.norm2.bias', 'decoder_blocks.5.mlp.fc1.weight', 'decoder_blocks.5.mlp.fc1.bias', 'decoder_blocks.5.mlp.fc2.weight', 'decoder_blocks.5.mlp.fc2.bias', 'decoder_blocks.6.norm1.weight', 'decoder_blocks.6.norm1.bias', 'decoder_blocks.6.attn.qkv.weight', 'decoder_blocks.6.attn.qkv.bias', 'decoder_blocks.6.attn.proj.weight', 'decoder_blocks.6.attn.proj.bias', 'decoder_blocks.6.norm2.weight', 'decoder_blocks.6.norm2.bias', 'decoder_blocks.6.mlp.fc1.weight', 'decoder_blocks.6.mlp.fc1.bias', 'decoder_blocks.6.mlp.fc2.weight', 'decoder_blocks.6.mlp.fc2.bias', 'decoder_blocks.7.norm1.weight', 'decoder_blocks.7.norm1.bias', 'decoder_blocks.7.attn.qkv.weight', 'decoder_blocks.7.attn.qkv.bias', 'decoder_blocks.7.attn.proj.weight', 'decoder_blocks.7.attn.proj.bias', 'decoder_blocks.7.norm2.weight', 'decoder_blocks.7.norm2.bias', 'decoder_blocks.7.mlp.fc1.weight', 'decoder_blocks.7.mlp.fc1.bias', 'decoder_blocks.7.mlp.fc2.weight', 'decoder_blocks.7.mlp.fc2.bias', 'decoder_norm.weight', 'decoder_norm.bias', 'decoder_pred.weight', 'decoder_pred.bias'], unexpected_keys=['head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'])
+   Loading cached encoder latents [train]: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/audiomae_train_n180_sr44100_gaps100-300-500-750-1200-1700.pt
+   Loading cached encoder latents [val]: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/preprocessed/encoder_latents/audiomae_val_n60_sr44100_gaps100-300-500-750-1200-1700.pt
+DDPM-Midi2Performance checkpoint tidak ditemukan; MAID memakai arsitektur asli dan akan dilatih dari awal.
+MAID original DDPM-Midi2Performance loaded via adapter.
+🖥️  GPU [Sebelum training] | Terpakai: 1.03GB | Reserved: 1.47GB | Bebas: 23.83GB / 25.30GB
+  Epoch 1/5 | Loss: 0.601661 | LR: 1.00e-04 | Time: 1m 25s
+  Profile audiomae_maid epoch 1: data_wait=0.35s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=93.74s | gpu_active_share~=99.6% | peak_vram=3.38GB | nvidia-smi gpu=0% mem_util=0% mem=4060/24576MB
+2026-05-18 12:07:58,768 | INFO | audiomae_maid epoch=1 train_loss=0.601661
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_latest.pt
+2026-05-18 12:07:59,266 | INFO | Training history saved for audiomae_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_maid_training_history.csv
+  Epoch 2/5 | Loss: 0.221173 | LR: 9.05e-05 | Time: 1m 25s
+  Profile audiomae_maid epoch 2: data_wait=0.07s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=86.29s | gpu_active_share~=99.9% | peak_vram=3.38GB | nvidia-smi gpu=0% mem_util=0% mem=4060/24576MB
+2026-05-18 12:09:24,870 | INFO | audiomae_maid epoch=2 train_loss=0.221173
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_latest.pt
+2026-05-18 12:09:25,294 | INFO | Training history saved for audiomae_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_maid_training_history.csv
+  Epoch 3/5 | Loss: 0.159270 | LR: 6.55e-05 | Time: 1m 24s
+  Profile audiomae_maid epoch 3: data_wait=0.08s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=82.41s | gpu_active_share~=99.9% | peak_vram=3.38GB | nvidia-smi gpu=6% mem_util=4% mem=4060/24576MB
+2026-05-18 12:10:50,064 | INFO | audiomae_maid epoch=3 train_loss=0.159270
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_latest.pt
+2026-05-18 12:10:50,512 | INFO | Training history saved for audiomae_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_maid_training_history.csv
+  Epoch 4/5 | Loss: 0.153281 | LR: 3.45e-05 | Time: 1m 25s
+  Profile audiomae_maid epoch 4: data_wait=0.07s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=87.59s | gpu_active_share~=99.9% | peak_vram=3.38GB | nvidia-smi gpu=0% mem_util=0% mem=4060/24576MB
+2026-05-18 12:12:16,468 | INFO | audiomae_maid epoch=4 train_loss=0.153281
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_latest.pt
+2026-05-18 12:12:16,896 | INFO | Training history saved for audiomae_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_maid_training_history.csv
+  Epoch 5/5 | Loss: 0.128206 | LR: 9.55e-06 | Time: 1m 25s
+  Profile audiomae_maid epoch 5: data_wait=0.07s | h2d~=0.03s | preproc/encoder~=0.00s | gpu_compute~=85.06s | gpu_active_share~=99.9% | peak_vram=3.38GB | nvidia-smi gpu=32% mem_util=22% mem=4060/24576MB
+  Val Loss: 0.096205
+2026-05-18 12:14:11,486 | INFO | audiomae_maid epoch=5 train_loss=0.128206 val_loss=0.096205
+  Best checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_best.pt
+  Latest checkpoint saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_latest.pt
+2026-05-18 12:14:12,276 | INFO | Training history saved for audiomae_maid: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/logs/audiomae_maid_training_history.csv
+
+Training time this run audiomae_maid: 7m 39s
+Total recorded training time audiomae_maid: 7m 07s
+Average epoch time audiomae_maid: 1m 25s
+2026-05-18 12:14:12,282 | INFO | Training timing saved for audiomae_maid: 427.43s
+Timing summary updated: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/training_timing_summary.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+MAID training complete. Best val loss: 0.096205
+✅ Training selesai. Checkpoint siap dipakai: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_best.pt
+🖥️  GPU [Sebelum clear] | Terpakai: 1.14GB | Reserved: 3.94GB | Bebas: 21.36GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 1.14GB | Reserved: 1.56GB | Bebas: 23.73GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+🖥️  GPU [Awal] | Terpakai: 0.92GB | Reserved: 1.56GB | Bebas: 23.73GB / 25.30GB
+📦 Menggunakan checkpoint: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_best.pt
+AudioMAE asli dari repo berhasil diload: /workspace/ssl-diffusion-audio-inpainting/external/AudioMAE/ckpt/pretrained.pth
+AudioMAE load_state_dict: _IncompatibleKeys(missing_keys=['mask_token', 'decoder_pos_embed', 'norm.weight', 'norm.bias', 'decoder_embed.weight', 'decoder_embed.bias', 'decoder_blocks.0.norm1.weight', 'decoder_blocks.0.norm1.bias', 'decoder_blocks.0.attn.qkv.weight', 'decoder_blocks.0.attn.qkv.bias', 'decoder_blocks.0.attn.proj.weight', 'decoder_blocks.0.attn.proj.bias', 'decoder_blocks.0.norm2.weight', 'decoder_blocks.0.norm2.bias', 'decoder_blocks.0.mlp.fc1.weight', 'decoder_blocks.0.mlp.fc1.bias', 'decoder_blocks.0.mlp.fc2.weight', 'decoder_blocks.0.mlp.fc2.bias', 'decoder_blocks.1.norm1.weight', 'decoder_blocks.1.norm1.bias', 'decoder_blocks.1.attn.qkv.weight', 'decoder_blocks.1.attn.qkv.bias', 'decoder_blocks.1.attn.proj.weight', 'decoder_blocks.1.attn.proj.bias', 'decoder_blocks.1.norm2.weight', 'decoder_blocks.1.norm2.bias', 'decoder_blocks.1.mlp.fc1.weight', 'decoder_blocks.1.mlp.fc1.bias', 'decoder_blocks.1.mlp.fc2.weight', 'decoder_blocks.1.mlp.fc2.bias', 'decoder_blocks.2.norm1.weight', 'decoder_blocks.2.norm1.bias', 'decoder_blocks.2.attn.qkv.weight', 'decoder_blocks.2.attn.qkv.bias', 'decoder_blocks.2.attn.proj.weight', 'decoder_blocks.2.attn.proj.bias', 'decoder_blocks.2.norm2.weight', 'decoder_blocks.2.norm2.bias', 'decoder_blocks.2.mlp.fc1.weight', 'decoder_blocks.2.mlp.fc1.bias', 'decoder_blocks.2.mlp.fc2.weight', 'decoder_blocks.2.mlp.fc2.bias', 'decoder_blocks.3.norm1.weight', 'decoder_blocks.3.norm1.bias', 'decoder_blocks.3.attn.qkv.weight', 'decoder_blocks.3.attn.qkv.bias', 'decoder_blocks.3.attn.proj.weight', 'decoder_blocks.3.attn.proj.bias', 'decoder_blocks.3.norm2.weight', 'decoder_blocks.3.norm2.bias', 'decoder_blocks.3.mlp.fc1.weight', 'decoder_blocks.3.mlp.fc1.bias', 'decoder_blocks.3.mlp.fc2.weight', 'decoder_blocks.3.mlp.fc2.bias', 'decoder_blocks.4.norm1.weight', 'decoder_blocks.4.norm1.bias', 'decoder_blocks.4.attn.qkv.weight', 'decoder_blocks.4.attn.qkv.bias', 'decoder_blocks.4.attn.proj.weight', 'decoder_blocks.4.attn.proj.bias', 'decoder_blocks.4.norm2.weight', 'decoder_blocks.4.norm2.bias', 'decoder_blocks.4.mlp.fc1.weight', 'decoder_blocks.4.mlp.fc1.bias', 'decoder_blocks.4.mlp.fc2.weight', 'decoder_blocks.4.mlp.fc2.bias', 'decoder_blocks.5.norm1.weight', 'decoder_blocks.5.norm1.bias', 'decoder_blocks.5.attn.qkv.weight', 'decoder_blocks.5.attn.qkv.bias', 'decoder_blocks.5.attn.proj.weight', 'decoder_blocks.5.attn.proj.bias', 'decoder_blocks.5.norm2.weight', 'decoder_blocks.5.norm2.bias', 'decoder_blocks.5.mlp.fc1.weight', 'decoder_blocks.5.mlp.fc1.bias', 'decoder_blocks.5.mlp.fc2.weight', 'decoder_blocks.5.mlp.fc2.bias', 'decoder_blocks.6.norm1.weight', 'decoder_blocks.6.norm1.bias', 'decoder_blocks.6.attn.qkv.weight', 'decoder_blocks.6.attn.qkv.bias', 'decoder_blocks.6.attn.proj.weight', 'decoder_blocks.6.attn.proj.bias', 'decoder_blocks.6.norm2.weight', 'decoder_blocks.6.norm2.bias', 'decoder_blocks.6.mlp.fc1.weight', 'decoder_blocks.6.mlp.fc1.bias', 'decoder_blocks.6.mlp.fc2.weight', 'decoder_blocks.6.mlp.fc2.bias', 'decoder_blocks.7.norm1.weight', 'decoder_blocks.7.norm1.bias', 'decoder_blocks.7.attn.qkv.weight', 'decoder_blocks.7.attn.qkv.bias', 'decoder_blocks.7.attn.proj.weight', 'decoder_blocks.7.attn.proj.bias', 'decoder_blocks.7.norm2.weight', 'decoder_blocks.7.norm2.bias', 'decoder_blocks.7.mlp.fc1.weight', 'decoder_blocks.7.mlp.fc1.bias', 'decoder_blocks.7.mlp.fc2.weight', 'decoder_blocks.7.mlp.fc2.bias', 'decoder_norm.weight', 'decoder_norm.bias', 'decoder_pred.weight', 'decoder_pred.bias'], unexpected_keys=['head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'])
+DDPM-Midi2Performance checkpoint tidak ditemukan; MAID memakai arsitektur asli dan akan dilatih dari awal.
+MAID original DDPM-Midi2Performance loaded via adapter.
+✅ Checkpoint diload: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/checkpoints/audiomae_maid/audiomae_maid_best.pt
+🖥️  GPU [Setelah load model terlatih] | Terpakai: 1.03GB | Reserved: 1.56GB | Bebas: 23.73GB / 25.30GB
+  train: 30 segments from 6 source files
+  val  : 10 segments from 2 source files
+  test : 10 segments from 2 source files
+  split seed: 42 | stratified by composer + instrument
+📂 Loading 2 sampel dari Drive (split=test)...
+✅ 2 sampel siap dievaluasi.
+
+🎵 Menjalankan inpainting AudioMAE + MAID...
+
+  Gap 100ms...
+
+  Gap 300ms...
+
+  Gap 500ms...
+
+  Gap 750ms...
+
+  Gap 1200ms...
+
+  Gap 1700ms...
+  Evaluating gap 100ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 300ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 500ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 750ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1200ms...
+fallback ke visqol
+fallback ke visqol
+  Evaluating gap 1700ms...
+fallback ke visqol
+fallback ke visqol
+2026-05-18 12:17:07,241 | INFO | Evaluation timing saved for audiomae_maid: 168.83s
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+📋 Hasil audiomae_maid:
+ gap_ms     LSD         FAD  PEAQ_ODG
+    100 13.8100  38001.8322   -0.4814
+    300 16.5465 129401.2267   -0.7421
+    500 17.3128 221425.6111   -0.7739
+    750 17.8498 243709.3069   -0.7926
+   1200 18.2610 270519.3402   -0.9019
+   1700 18.5036 272330.9031   -1.1558
+💾 Hasil audiomae_maid disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/audiomae_maid_results.csv
+💾 Master file diupdate: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/all_results.csv
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+🖥️  GPU [Sebelum clear] | Terpakai: 1.03GB | Reserved: 1.56GB | Bebas: 23.73GB / 25.30GB
+🖥️  GPU [Sesudah clear] | Terpakai: 1.03GB | Reserved: 1.26GB | Bebas: 24.04GB / 25.30GB
+✅ GPU memory berhasil dibersihkan
+
+
+✅ audiomae_maid selesai!
+📊 Model yang tersedia: ['baseline_cqtdiff', 'clap_cqtdiff', 'clap_maid', 'audiomae_cqtdiff', 'audiomae_maid']
+
+======================================================================
+TABEL PERBANDINGAN LENGKAP
+======================================================================
+
+LSD (↓ lebih rendah = lebih baik):
+model   baseline_cqtdiff  clap_cqtdiff  clap_maid  audiomae_cqtdiff  audiomae_maid
+gap_ms                                                                            
+100               4.3117        4.2113    12.3387            4.2371        13.8100
+300               5.3470        5.1838    16.7528            5.2268        16.5465
+500               5.8559        5.6437    16.7271            5.7091        17.3128
+750               6.3903        6.1267    17.8786            6.1410        17.8498
+1200              6.5466        6.3146    18.1259            6.2742        18.2610
+1700              6.7945        6.5427    18.4253            6.4971        18.5036
+
+FAD (↓ lebih rendah = lebih baik):
+model   baseline_cqtdiff  clap_cqtdiff    clap_maid  audiomae_cqtdiff  audiomae_maid
+gap_ms                                                                              
+100           22445.7775    24051.8892   50947.7849        22917.1070     38001.8322
+300           74512.2052    61412.0755  140185.9336        76611.5614    129401.2267
+500          130117.2256   133588.6765  227163.6258       121217.4768    221425.6111
+750          153171.3356   171069.8897  236300.0848       152988.8680    243709.3069
+1200         166658.6453   184481.5047  249629.4474       187814.4420    270519.3402
+1700         221066.6065   217167.0127  253423.2186       214874.8373    272330.9031
+
+PEAQ_ODG (↑ mendekati 0 = lebih baik):
+model   baseline_cqtdiff  clap_cqtdiff  clap_maid  audiomae_cqtdiff  audiomae_maid
+gap_ms                                                                            
+100              -0.4062       -0.4390    -0.4767           -0.4419        -0.4814
+300              -0.5667       -0.6083    -0.7480           -0.6176        -0.7421
+500              -0.7898       -0.7799    -0.7701           -0.7974        -0.7739
+750              -0.7348       -0.7127    -0.7942           -0.7231        -0.7926
+1200             -0.9633       -0.9481    -0.9086           -0.9906        -0.9019
+1700             -1.1767       -1.2898    -1.1178           -1.2828        -1.1558
+
+💾 Grafik disimpan: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/plots/comparison_plot.png
+
+========================================================================
+📈 IMPROVEMENT HYBRID vs BASELINE (per gap duration)
+   Positif = lebih baik dari baseline
+========================================================================
+
+  Gap 100ms:
+  Model                           ΔLSD       ΔFAD  ΔPEAQ_ODG
+  -----------------------------------------------------------------
+  clap_cqtdiff                 +0.1004 -1606.1117    -0.0328
+  clap_maid                    -8.0270 -28502.0074    -0.0705
+  audiomae_cqtdiff             +0.0746  -471.3295    -0.0357
+  audiomae_maid                -9.4983 -15556.0547    -0.0752
+
+  Gap 300ms:
+  Model                           ΔLSD       ΔFAD  ΔPEAQ_ODG
+  -----------------------------------------------------------------
+  clap_cqtdiff                 +0.1632 +13100.1297    -0.0416
+  clap_maid                   -11.4058 -65673.7284    -0.1813
+  audiomae_cqtdiff             +0.1202 -2099.3562    -0.0509
+  audiomae_maid               -11.1995 -54889.0215    -0.1754
+
+  Gap 500ms:
+  Model                           ΔLSD       ΔFAD  ΔPEAQ_ODG
+  -----------------------------------------------------------------
+  clap_cqtdiff                 +0.2122 -3471.4509    +0.0099
+  clap_maid                   -10.8712 -97046.4002    +0.0197
+  audiomae_cqtdiff             +0.1468 +8899.7488    -0.0076
+  audiomae_maid               -11.4569 -91308.3855    +0.0159
+
+  Gap 750ms:
+  Model                           ΔLSD       ΔFAD  ΔPEAQ_ODG
+  -----------------------------------------------------------------
+  clap_cqtdiff                 +0.2636 -17898.5541    +0.0221
+  clap_maid                   -11.4883 -83128.7492    -0.0594
+  audiomae_cqtdiff             +0.2493  +182.4676    +0.0117
+  audiomae_maid               -11.4595 -90537.9713    -0.0578
+
+  Gap 1200ms:
+  Model                           ΔLSD       ΔFAD  ΔPEAQ_ODG
+  -----------------------------------------------------------------
+  clap_cqtdiff                 +0.2320 -17822.8594    +0.0152
+  clap_maid                   -11.5793 -82970.8021    +0.0547
+  audiomae_cqtdiff             +0.2724 -21155.7967    -0.0273
+  audiomae_maid               -11.7144 -103860.6949    +0.0614
+
+  Gap 1700ms:
+  Model                           ΔLSD       ΔFAD  ΔPEAQ_ODG
+  -----------------------------------------------------------------
+  clap_cqtdiff                 +0.2518 +3899.5938    -0.1131
+  clap_maid                   -11.6308 -32356.6121    +0.0589
+  audiomae_cqtdiff             +0.2974 +6191.7692    -0.1061
+  audiomae_maid               -11.7091 -51264.2966    +0.0209
+Experiment summary saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.csv
+Experiment summary JSON saved: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results/experiment_summary.json
+
+✅ Semua hasil tersimpan di: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/results
+Plots tersimpan di: /workspace/ssl-diffusion-audio-inpainting/music_inpainting/training_stages/code_v3_final_run/plots
