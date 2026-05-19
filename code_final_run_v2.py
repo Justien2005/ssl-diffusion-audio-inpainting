@@ -2481,6 +2481,42 @@ def compute_frame_mask(sample_mask, n_frames, hop_length=512):
     return pooled > 0.5  # (B, T) boolean
 
 
+CQT_WAVEFORM_GAP_LOSS_WEIGHT = float(os.environ.get("CQT_WAVEFORM_GAP_LOSS_WEIGHT", "0.1"))
+CQT_ENERGY_LOSS_WEIGHT = float(os.environ.get("CQT_ENERGY_LOSS_WEIGHT", "0.05"))
+
+
+def spec_features_to_waveform(pred_spec, audio_length, n_fft=2048, hop_length=512):
+    """Convert predicted real+imag STFT features (B, T, 2F) back to waveform."""
+    with torch.autocast(device_type="cuda" if pred_spec.device.type == "cuda" else "cpu", enabled=False):
+        pred_spec = pred_spec.float()
+        batch_size, n_frames, two_freq = pred_spec.shape
+        freq_bins = two_freq // 2
+        pred_pairs = pred_spec.reshape(batch_size, n_frames, freq_bins, 2).permute(0, 2, 1, 3).contiguous()
+        complex_spec = torch.view_as_complex(pred_pairs)
+        window = _get_hann_window(n_fft, pred_spec.device)
+        return torch.istft(
+            complex_spec,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            window=window,
+            length=audio_length,
+        )
+
+
+def compute_waveform_gap_losses(pred_spec, clean_audio, sample_mask):
+    """Waveform-domain gap loss plus log-RMS energy loss to discourage silent gaps."""
+    pred_wave = spec_features_to_waveform(pred_spec, clean_audio.shape[-1])
+    mask = sample_mask.bool()
+    waveform_gap_loss = F.l1_loss(pred_wave[mask], clean_audio[mask])
+
+    mask_f = mask.float()
+    denom = mask_f.sum(dim=1).clamp_min(1.0)
+    pred_rms = torch.sqrt(((pred_wave * mask_f).pow(2).sum(dim=1) / denom).clamp_min(1e-10))
+    target_rms = torch.sqrt(((clean_audio * mask_f).pow(2).sum(dim=1) / denom).clamp_min(1e-10))
+    energy_loss = F.l1_loss(torch.log(pred_rms + 1e-5), torch.log(target_rms + 1e-5))
+    return pred_wave, waveform_gap_loss, energy_loss
+
+
 PROFILE_EVERY_N_STEPS = 25
 
 
@@ -2606,7 +2642,13 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
         frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
         gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
         full_loss = F.l1_loss(pred_spec, target_spec)
-        loss = gap_loss + 0.1 * full_loss
+        _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
+        loss = (
+            gap_loss
+            + 0.1 * full_loss
+            + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
+            + CQT_ENERGY_LOSS_WEIGHT * energy_loss
+        )
 
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
@@ -2624,6 +2666,8 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
         "loss": loss.item(),
         "gap_loss": gap_loss.item(),
         "full_loss": full_loss.item(),
+        "waveform_gap_loss": waveform_gap_loss.item(),
+        "energy_loss": energy_loss.item(),
         "_profile": profile,
     }
 
@@ -2657,7 +2701,13 @@ def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profil
         frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
         gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
         full_loss = F.l1_loss(pred_spec, target_spec)
-        loss = gap_loss + 0.1 * full_loss
+        _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
+        loss = (
+            gap_loss
+            + 0.1 * full_loss
+            + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
+            + CQT_ENERGY_LOSS_WEIGHT * energy_loss
+        )
 
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
@@ -2669,7 +2719,14 @@ def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profil
     if profile_step:
         profile["gpu_compute_seconds"] = time.perf_counter() - t_gpu
 
-    return {"loss": loss.item(), "gap_loss": gap_loss.item(), "_profile": profile}
+    return {
+        "loss": loss.item(),
+        "gap_loss": gap_loss.item(),
+        "full_loss": full_loss.item(),
+        "waveform_gap_loss": waveform_gap_loss.item(),
+        "energy_loss": energy_loss.item(),
+        "_profile": profile,
+    }
 
 
 def get_training_checkpoint_paths(checkpoint_dir, model_name):
@@ -3027,7 +3084,15 @@ def validate_model(decoder, encoder_fn, film, val_loader, device):
             target_spec = target_spec[:, :T_min, :]
 
             frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
-            val_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+            gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+            full_loss = F.l1_loss(pred_spec, target_spec)
+            _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
+            val_loss = (
+                gap_loss
+                + 0.1 * full_loss
+                + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
+                + CQT_ENERGY_LOSS_WEIGHT * energy_loss
+            )
             val_losses.append(val_loss.item())
 
     return float(np.mean(val_losses))
@@ -3053,7 +3118,15 @@ def validate_baseline(decoder, val_loader, device):
             target_spec = target_spec[:, :T_min, :]
 
             frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
-            val_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+            gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+            full_loss = F.l1_loss(pred_spec, target_spec)
+            _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
+            val_loss = (
+                gap_loss
+                + 0.1 * full_loss
+                + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
+                + CQT_ENERGY_LOSS_WEIGHT * energy_loss
+            )
             val_losses.append(val_loss.item())
 
     return float(np.mean(val_losses))

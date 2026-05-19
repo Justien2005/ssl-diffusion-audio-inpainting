@@ -61,6 +61,80 @@ def _patch_cqtdiff_numpy_clip(cqt_diff_dir):
         print(f"Patched CQTdiff NumPy clip compatibility: {patch_path}")
 
 
+def _patch_cqtdiff_nsigtf_autograd(cqt_diff_dir):
+    """Patch inverse NSGT overlap-add to avoid autograd-breaking in-place ops."""
+    patch_path = os.path.join(cqt_diff_dir, "src", "nsgt", "nsigtf.py")
+    if not os.path.exists(patch_path):
+        return
+
+    with open(patch_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    if "torch.index_add(fr, 2, wr1_idx" in text:
+        return
+
+    text = text.replace(
+        "    temp0 = torch.empty(*cseq_shape[:2], maxLg, dtype=fr.dtype, device=torch.device(device))  # pre-allocation\n",
+        "",
+    )
+    matrix_old = """            t1 = temp0[:, :, :r]
+            t2 = temp0[:, :, Lg-l:Lg]
+
+            t1[:, :, :] = t[:, :, :r]
+            t2[:, :, :] = t[:, :, maxLg-l:maxLg]
+
+            temp0[:, :, :Lg] *= gdiis[i, :Lg] 
+            temp0[:, :, :Lg] *= maxLg
+
+            fr[:, :, wr1] += t2
+            fr[:, :, wr2] += t1
+"""
+    matrix_new = """            if Lg - r - l > 0:
+                middle = torch.zeros(*cseq_shape[:2], Lg - r - l, dtype=fr.dtype, device=torch.device(device))
+                temp = torch.cat([t[:, :, :r], middle, t[:, :, maxLg-l:maxLg]], dim=-1)
+            else:
+                temp = torch.cat([t[:, :, :r], t[:, :, maxLg-l:maxLg]], dim=-1)
+            temp = temp * gdiis[i, :Lg] * maxLg
+
+            wr1_idx = torch.as_tensor(wr1, dtype=torch.long, device=torch.device(device))
+            wr2_idx = torch.as_tensor(wr2, dtype=torch.long, device=torch.device(device))
+            fr = torch.index_add(fr, 2, wr1_idx, temp[:, :, Lg-l:Lg])
+            fr = torch.index_add(fr, 2, wr2_idx, temp[:, :, :r])
+"""
+    bucket_old = """                t1 = temp0[:, :, :r]
+                t2 = temp0[:, :, Lg-l:Lg]
+
+                t1[:, :, :] = t[:, :, :r]
+                t2[:, :, :] = t[:, :, Lg-l:Lg]
+
+                temp0[:, :, :Lg] *= gdiis[freq_idx, :Lg] 
+                temp0[:, :, :Lg] *= Lg
+
+                fr[:, :, wr1] += t2
+                fr[:, :, wr2] += t1
+"""
+    bucket_new = """                if Lg - r - l > 0:
+                    middle = torch.zeros(*cseq_shape[:2], Lg - r - l, dtype=fr.dtype, device=torch.device(device))
+                    temp = torch.cat([t[:, :, :r], middle, t[:, :, Lg-l:Lg]], dim=-1)
+                else:
+                    temp = torch.cat([t[:, :, :r], t[:, :, Lg-l:Lg]], dim=-1)
+                temp = temp * gdiis[freq_idx, :Lg] * Lg
+
+                wr1_idx = torch.as_tensor(wr1, dtype=torch.long, device=torch.device(device))
+                wr2_idx = torch.as_tensor(wr2, dtype=torch.long, device=torch.device(device))
+                fr = torch.index_add(fr, 2, wr1_idx, temp[:, :, Lg-l:Lg])
+                fr = torch.index_add(fr, 2, wr2_idx, temp[:, :, :r])
+"""
+    if matrix_old not in text or bucket_old not in text:
+        print(f"WARNING: CQTdiff nsigtf autograd patch pattern not found: {patch_path}")
+        return
+
+    text = text.replace(matrix_old, matrix_new).replace(bucket_old, bucket_new)
+    with open(patch_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"Patched CQTdiff NSIGT autograd compatibility: {patch_path}")
+
+
 def _find_cqtdiff_weights(cqt_diff_dir):
     candidates = [
         os.environ.get("CQTDIFF_WEIGHTS"),
@@ -97,6 +171,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         self.gap_durations_ms = list(gap_durations_ms)
         self.cqt_diff_dir = os.path.abspath(cqt_diff_dir)
         _patch_cqtdiff_numpy_clip(self.cqt_diff_dir)
+        _patch_cqtdiff_nsigtf_autograd(self.cqt_diff_dir)
 
         with _prepend_path(self.cqt_diff_dir):
             from src.models.unet_cqt import Unet_CQT
