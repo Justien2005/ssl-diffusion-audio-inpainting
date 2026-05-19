@@ -4146,7 +4146,7 @@ FORCE_REEVAL = True     # <-- True buat hapus hasil lama dan re-evaluasi
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 10
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 LEARNING_RATE = 1e-4
 
@@ -4271,7 +4271,7 @@ else:
 MODEL_NAME = "clap_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 10
@@ -4401,7 +4401,7 @@ else:
 MODEL_NAME = "clap_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 10
@@ -4531,7 +4531,7 @@ else:
 MODEL_NAME = "audiomae_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 10
@@ -4661,7 +4661,7 @@ else:
 MODEL_NAME = "audiomae_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 NUM_WORKERS = AUTO_NUM_WORKERS
 NUM_EPOCHS = 10
 LEARNING_RATE = 1e-4
