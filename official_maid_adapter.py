@@ -168,10 +168,16 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
     def _load_pretrained_if_available(self, checkpoint_path=None):
         ckpt = next((path for path in self._candidate_checkpoints(checkpoint_path) if path.exists()), None)
         if ckpt is None:
-            print(
-                "DDPM-Midi2Performance checkpoint tidak ditemukan; "
-                "MAID memakai arsitektur asli dan akan dilatih dari awal."
+            msg = (
+                "DDPM-Midi2Performance checkpoint tidak ditemukan. "
+                "Set MAID_M2P_CHECKPOINT/DDPM_M2P_CHECKPOINT ke checkpoint resmi, "
+                "atau set ALLOW_RANDOM_MAID=1 hanya untuk smoke test non-paper."
             )
+            allow_random = os.environ.get("ALLOW_RANDOM_MAID", "0").lower() in {"1", "true", "yes"}
+            if allow_random:
+                print(f"WARNING: {msg} MAID memakai arsitektur asli dan dilatih dari awal.")
+                return
+            raise FileNotFoundError(msg)
             return
 
         payload = torch.load(ckpt, map_location="cpu", weights_only=False)
@@ -195,8 +201,19 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
                     break
             stripped[name] = value
 
+        decoder_state = self.decoder.state_dict()
+        matched_keys = [
+            name for name, value in stripped.items()
+            if name in decoder_state and tuple(decoder_state[name].shape) == tuple(value.shape)
+        ]
+        if not matched_keys:
+            raise RuntimeError(
+                f"Checkpoint MAID tidak memiliki key yang cocok dengan decoder saat ini: {ckpt}"
+            )
+
         msg = self.decoder.load_state_dict(stripped, strict=False)
         print(f"DDPM-Midi2Performance pretrained checkpoint diload: {ckpt}")
+        print(f"MAID matched pretrained keys: {len(matched_keys)} / {len(decoder_state)}")
         print(f"MAID backbone load_state_dict: {msg}")
 
     def audio_to_mel_batch(self, audio_batch, sr=None, return_ref=False):

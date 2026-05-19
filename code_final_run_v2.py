@@ -1273,8 +1273,8 @@ def compute_visqol_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int 
     """
     Hitung ViSQOL perceptual quality sebagai Objective Difference Grade-like score.
 
-    Primary path memakai ViSQOL audio mode. Fallback terakhir adalah NSIM
-    log-mel yang dipetakan ke ODG-like scale agar evaluasi tetap bisa berjalan.
+    Primary path memakai ViSQOL audio mode. Untuk hasil paper, kegagalan ViSQOL
+    harus fail-fast; NSIM hanya boleh dipakai untuk smoke test eksplisit.
     """
     global _VISQOL_FALLBACK_WARNED
 
@@ -1291,10 +1291,16 @@ def compute_visqol_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int 
     try:
         return _compute_visqol_odg(original, reconstructed, visqol_sr)
     except Exception as exc:
-        if not _VISQOL_FALLBACK_WARNED:
-            print(f"⚠️ ViSQOL gagal ({exc}); fallback ke NSIM untuk VISQOL_ODG.")
-            _VISQOL_FALLBACK_WARNED = True
-        return _compute_nsim_odg(original, reconstructed, visqol_sr)
+        allow_nsim = os.environ.get("ALLOW_NSIM_VISQOL_FALLBACK", "0").lower() in {"1", "true", "yes"}
+        if allow_nsim:
+            if not _VISQOL_FALLBACK_WARNED:
+                print(f"⚠️ ViSQOL gagal ({exc}); fallback ke NSIM ODG-like untuk smoke test.")
+                _VISQOL_FALLBACK_WARNED = True
+            return _compute_nsim_odg(original, reconstructed, visqol_sr)
+        raise RuntimeError(
+            "ViSQOL gagal, sehingga VISQOL_ODG tidak boleh diisi dengan proxy NSIM untuk hasil paper. "
+            "Perbaiki instalasi ViSQOL atau set ALLOW_NSIM_VISQOL_FALLBACK=1 hanya untuk smoke test."
+        ) from exc
 
 
 # Backward-compatible aliases.
