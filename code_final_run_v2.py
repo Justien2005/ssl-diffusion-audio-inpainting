@@ -1005,6 +1005,8 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
 
     FAD selalu menggunakan VGGish embeddings di CPU agar skala metrik konsisten
     dengan pipeline FAD legacy. Tidak ada fallback log-mel untuk FAD.
+    Semua patch embedding VGGish dari seluruh set dipakai sebagai sampel FAD;
+    embedding tidak dirata-rata per file.
     """
     features = []
     try:
@@ -1022,21 +1024,32 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
 
         with _torch.inference_mode():
             for audio in audio_list:
+                audio = np.asarray(audio, dtype=np.float32)
+                if audio.ndim > 1:
+                    audio = audio.mean(axis=1, dtype=np.float32)
+                audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
                 audio_16k = librosa.resample(
-                    np.asarray(audio, dtype=np.float32),
+                    audio,
                     orig_sr=sr,
                     target_sr=16000,
                 )
                 examples = _vggish_input.waveform_to_examples(audio_16k, 16000)
+                if len(examples) == 0:
+                    raise RuntimeError("VGGish tidak menghasilkan example untuk salah satu audio.")
                 examples = _torch.as_tensor(examples, dtype=_torch.float32, device=_device)
                 emb = _vggish(examples)
-                features.append(emb.mean(0).detach().cpu().numpy())
+                features.append(emb.detach().cpu().numpy())
     except Exception as exc:
         raise RuntimeError(
             "FAD wajib memakai VGGish CPU. Install/konfigurasi torchvggish sebelum evaluasi FAD."
         ) from exc
 
-    return np.asarray(features, dtype=np.float64)
+    features = np.concatenate(features, axis=0).astype(np.float64, copy=False)
+    if features.ndim != 2 or features.shape[0] < 2:
+        raise RuntimeError(f"Embedding VGGish FAD tidak cukup: shape={features.shape}")
+    if not np.isfinite(features).all():
+        raise RuntimeError("Embedding VGGish FAD berisi NaN/Inf.")
+    return features
 
 
 def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TARGET_SR):
@@ -1050,17 +1063,19 @@ def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TAR
     orig_features = extract_fad_features(original_audios, sr)
     recon_features = extract_fad_features(reconstructed_audios, sr)
 
-    if orig_features.ndim == 1:
-        orig_features = orig_features[:, None]
-    if recon_features.ndim == 1:
-        recon_features = recon_features[:, None]
+    if orig_features.shape[1] != recon_features.shape[1]:
+        raise RuntimeError(
+            f"Dimensi embedding FAD tidak cocok: original={orig_features.shape}, recon={recon_features.shape}"
+        )
 
     mu1 = np.mean(orig_features, axis=0)
     mu2 = np.mean(recon_features, axis=0)
     d = orig_features.shape[1]
 
     if len(orig_features) < 2 or len(recon_features) < 2:
-        return float(np.sum((mu1 - mu2) ** 2))
+        raise RuntimeError(
+            f"FAD butuh minimal 2 embedding per set: original={len(orig_features)}, recon={len(recon_features)}"
+        )
 
     sigma1 = np.cov(orig_features, rowvar=False) + 1e-6 * np.eye(d)
     sigma2 = np.cov(recon_features, rowvar=False) + 1e-6 * np.eye(d)
@@ -1068,12 +1083,20 @@ def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TAR
     diff = mu1 - mu2
     mean_diff = np.dot(diff, diff)
 
-    covmean, _ = sqrtm(sigma1 @ sigma2, disp=False)
+    cov_prod = sigma1 @ sigma2
+    covmean, _ = sqrtm(cov_prod, disp=False)
+    if not np.isfinite(covmean).all():
+        offset = np.eye(d) * 1e-5
+        covmean, _ = sqrtm((sigma1 + offset) @ (sigma2 + offset), disp=False)
     if np.iscomplexobj(covmean):
+        if np.max(np.abs(covmean.imag)) > 1e-3:
+            raise RuntimeError("sqrtm covariance FAD menghasilkan komponen imajiner besar.")
         covmean = covmean.real
 
     fad = mean_diff + np.trace(sigma1 + sigma2 - 2 * covmean)
-    return float(np.real(fad))
+    if not np.isfinite(fad):
+        raise RuntimeError("FAD menghasilkan NaN/Inf.")
+    return float(max(0.0, np.real(fad)))
 
 
 def _eval_device():
