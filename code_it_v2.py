@@ -763,10 +763,25 @@ def write_preprocessing_timing(status, total_seconds, total_segments=0):
 preprocessing_start = time.perf_counter()
 
 preprocessed_flag = os.path.join(PATHS["preprocessed"], ".done")
+preprocessed_metadata = os.path.join(PATHS["preprocessed"], "metadata.csv")
+expected_mask_dirs = [
+    os.path.join(PATHS["masked"], f"gap_{gap_ms}ms")
+    for gap_ms in GAP_DURATIONS_MS
+]
+preprocessed_artifacts_ready = (
+    os.path.exists(preprocessed_flag)
+    or (
+        os.path.exists(preprocessed_metadata)
+        and all(os.path.isdir(path) for path in expected_mask_dirs)
+    )
+)
 
-if SKIP_IF_EXISTS and os.path.exists(preprocessed_flag):
+if SKIP_IF_EXISTS and preprocessed_artifacts_ready:
     print("✅ Preprocessing sudah selesai sebelumnya, skip.")
     print("   Set SKIP_IF_EXISTS = False untuk memaksa preprocessing ulang.")
+    if not os.path.exists(preprocessed_flag):
+        with open(preprocessed_flag, "w") as f:
+            f.write("done")
     write_preprocessing_timing("skipped", time.perf_counter() - preprocessing_start, 0)
 else:
     audio_dir = download_musicnet()

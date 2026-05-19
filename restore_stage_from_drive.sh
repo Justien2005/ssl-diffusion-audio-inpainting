@@ -123,6 +123,8 @@ if [ ! -f "$TARGET_STAGE_DIR/preprocessed/metadata.csv" ]; then
   exit 1
 fi
 
+touch "$TARGET_STAGE_DIR/preprocessed/.done"
+
 echo "==> Existing checkpoint folders"
 find "$TARGET_STAGE_DIR/checkpoints" -mindepth 1 -maxdepth 1 -type d -printf "    %f\n" | sort || true
 
