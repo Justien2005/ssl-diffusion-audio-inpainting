@@ -18,7 +18,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$REPO_DIR}"
 MUSIC_ROOT="${MUSIC_INPAINTING_ROOT:-$PROJECT_ROOT/music_inpainting}"
 STAGE_NAME="${PIPELINE_STAGE_NAME:-code_v3_final_run_real}"
 TARGET_STAGE_DIR="$MUSIC_ROOT/training_stages/$STAGE_NAME"
-STAGE_ZIP_URL="${STAGE_ZIP_URL:-https://docs.google.com/document/d/1ctzhk98oU6I3UOnUg8fZI4YXjN01AWcE/edit?usp=sharing&ouid=117322035655979784443&rtpof=true&sd=true}"
+STAGE_ZIP_URL="${STAGE_ZIP_URL:-https://drive.google.com/file/d/1dO25s3cuKbXbnjJxy680WSr51H62yP2I/view?usp=sharing}"
 STAGE_ZIP_PATH="${STAGE_ZIP_PATH:-$REPO_DIR/${STAGE_NAME}.zip}"
 FORCE_OVERWRITE="${FORCE_OVERWRITE:-0}"
 
