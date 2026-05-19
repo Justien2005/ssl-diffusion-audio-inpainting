@@ -2739,6 +2739,43 @@ def load_training_checkpoint_if_available(decoder, optimizer, scheduler, scaler,
     print(f"Resuming {model_name} from epoch {start_epoch + 1} using {latest_path}")
     return start_epoch, float(best_val_loss), history
 
+
+EARLY_STOPPING_ENABLED = os.environ.get("EARLY_STOPPING_ENABLED", "1").lower() in {"1", "true", "yes"}
+EARLY_STOPPING_PATIENCE = int(os.environ.get("EARLY_STOPPING_PATIENCE", "4"))
+EARLY_STOPPING_MIN_DELTA = float(os.environ.get("EARLY_STOPPING_MIN_DELTA", "1e-4"))
+EARLY_STOPPING_MIN_EPOCHS = int(os.environ.get("EARLY_STOPPING_MIN_EPOCHS", "30"))
+VAL_EVERY_EPOCHS = int(os.environ.get("VAL_EVERY_EPOCHS", "5"))
+
+
+def _count_stale_validations(history, best_val_loss,
+                             min_delta=EARLY_STOPPING_MIN_DELTA):
+    stale = 0
+    for row in reversed(history or []):
+        val = row.get("val_loss")
+        if val is None or not np.isfinite(val):
+            continue
+        if float(val) <= float(best_val_loss) + float(min_delta):
+            break
+        stale += 1
+    return stale
+
+
+def should_early_stop(history, best_val_loss, current_epoch, model_name):
+    if not EARLY_STOPPING_ENABLED:
+        return False
+    if current_epoch < EARLY_STOPPING_MIN_EPOCHS:
+        return False
+    stale = _count_stale_validations(history, best_val_loss)
+    if stale >= EARLY_STOPPING_PATIENCE:
+        print(
+            f"  Early stopping {model_name}: tidak ada improvement val_loss > "
+            f"{EARLY_STOPPING_MIN_DELTA:g} selama {stale} validasi "
+            f"(patience={EARLY_STOPPING_PATIENCE})."
+        )
+        return True
+    return False
+
+
 def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                 num_epochs=50, lr=1e-4, device="cuda", checkpoint_dir=None,
                 model_name="model", batch_size=None, dataset_fraction=None):
@@ -2793,7 +2830,7 @@ def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
 
         val_loss = None
         is_best = False
-        if val_loader is not None and (epoch + 1) % 5 == 0:
+        if val_loader is not None and (epoch + 1) % VAL_EVERY_EPOCHS == 0:
             val_loss = validate_model(decoder, encoder_fn, film, val_loader, device)
             print(f"  Val Loss: {val_loss:.6f}")
             logging.getLogger("music_inpainting").info("%s epoch=%s train_loss=%.6f val_loss=%.6f", model_name, epoch + 1, avg_loss, val_loss)
@@ -2821,6 +2858,8 @@ def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                 history=history, best_val_loss=best_val_loss, is_best=is_best,
             )
         save_training_history_artifacts(model_name, history)
+        if val_loss is not None and should_early_stop(history, best_val_loss, epoch + 1, model_name):
+            break
 
     if checkpoint_dir:
         paths = get_training_checkpoint_paths(checkpoint_dir, model_name)
@@ -2900,7 +2939,7 @@ def train_baseline_model(decoder, train_loader, val_loader=None,
 
         val_loss = None
         is_best = False
-        if val_loader is not None and (epoch + 1) % 5 == 0:
+        if val_loader is not None and (epoch + 1) % VAL_EVERY_EPOCHS == 0:
             val_loss = validate_baseline(decoder, val_loader, device)
             print(f"  Val Loss: {val_loss:.6f}")
             logging.getLogger("music_inpainting").info("%s epoch=%s train_loss=%.6f val_loss=%.6f", model_name, epoch + 1, avg_loss, val_loss)
@@ -2928,6 +2967,8 @@ def train_baseline_model(decoder, train_loader, val_loader=None,
                 history=history, best_val_loss=best_val_loss, is_best=is_best,
             )
         save_training_history_artifacts(model_name, history)
+        if val_loss is not None and should_early_stop(history, best_val_loss, epoch + 1, model_name):
+            break
 
     if checkpoint_dir:
         paths = get_training_checkpoint_paths(checkpoint_dir, model_name)
@@ -3633,7 +3674,7 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
 
         val_loss = None
         is_best = False
-        if val_loader is not None and (epoch + 1) % 5 == 0:
+        if val_loader is not None and (epoch + 1) % VAL_EVERY_EPOCHS == 0:
             decoder.eval()
             film.eval()
             val_losses = []
@@ -3691,6 +3732,8 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                 history=history, best_val_loss=best_val_loss, is_best=is_best,
             )
         save_training_history_artifacts(model_name, history)
+        if val_loss is not None and should_early_stop(history, best_val_loss, epoch + 1, model_name):
+            break
 
     if checkpoint_dir:
         paths = get_training_checkpoint_paths(checkpoint_dir, model_name)
