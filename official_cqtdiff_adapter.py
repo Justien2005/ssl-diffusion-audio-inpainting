@@ -70,7 +70,15 @@ def _patch_cqtdiff_nsigtf_autograd(cqt_diff_dir):
     with open(patch_path, "r", encoding="utf-8") as f:
         text = f.read()
 
+    dtype_cast = "    gdiis = gdiis.to(dtype=cseq_dtype, device=torch.device(device))\n\n"
+    fr_alloc = "    fr = torch.zeros(*cseq_shape[:2], nn, dtype=cseq_dtype, device=torch.device(device))  # Allocate output\n"
+
     if "torch.index_add(fr, 2, wr1_idx" in text:
+        if dtype_cast not in text and fr_alloc in text:
+            text = text.replace(fr_alloc, dtype_cast + fr_alloc)
+            with open(patch_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            print(f"Patched CQTdiff NSIGT dtype compatibility: {patch_path}")
         return
 
     text = text.replace(
@@ -130,6 +138,8 @@ def _patch_cqtdiff_nsigtf_autograd(cqt_diff_dir):
         return
 
     text = text.replace(matrix_old, matrix_new).replace(bucket_old, bucket_new)
+    if dtype_cast not in text and fr_alloc in text:
+        text = text.replace(fr_alloc, dtype_cast + fr_alloc)
     with open(patch_path, "w", encoding="utf-8") as f:
         f.write(text)
     print(f"Patched CQTdiff NSIGT autograd compatibility: {patch_path}")
