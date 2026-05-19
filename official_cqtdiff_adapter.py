@@ -125,6 +125,13 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         if not train_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad_(False)
+        trainable_backbone_params = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+        total_backbone_params = sum(p.numel() for p in self.backbone.parameters())
+        print(
+            "CQT-Diff+ backbone training: "
+            f"{'enabled' if train_backbone else 'disabled'} "
+            f"({trainable_backbone_params:,}/{total_backbone_params:,} trainable params)"
+        )
 
         self.n_fft = int(os.environ.get("CQTDIFF_ADAPTER_N_FFT", 2048))
         self.hop_length = int(os.environ.get("CQTDIFF_ADAPTER_HOP", 512))

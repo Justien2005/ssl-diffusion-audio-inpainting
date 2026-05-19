@@ -238,6 +238,13 @@ OFFICIAL_MODELS_ONLY = True
 OFFICIAL_CQTDIFF_ADAPTER = os.environ.get("OFFICIAL_CQTDIFF_ADAPTER", "official_cqtdiff_adapter")
 MAID_ADAPTER = os.environ.get("MAID_ADAPTER", "official_maid_adapter")
 
+# Diagnostic experiment: train the official CQT-Diff+ backbone together with
+# the adapter reconstruction head. This is heavier, but helps test whether the
+# silent/noisy gap comes from the frozen backbone + small head setup.
+CQTDIFF_TRAIN_BACKBONE_EXPERIMENT = True
+os.environ["CQTDIFF_TRAIN_BACKBONE"] = "1" if CQTDIFF_TRAIN_BACKBONE_EXPERIMENT else "0"
+print(f"CQT-Diff+ train backbone experiment: CQTDIFF_TRAIN_BACKBONE={os.environ['CQTDIFF_TRAIN_BACKBONE']}")
+
 
 def validate_official_model_configuration():
     if not OFFICIAL_MODELS_ONLY:
