@@ -35,10 +35,28 @@ if [ ! -f "$STAGE_ZIP_PATH" ]; then
   echo "==> Downloading stage zip"
   echo "    url: $STAGE_ZIP_URL"
   echo "    out: $STAGE_ZIP_PATH"
+  DRIVE_FILE_ID=""
+  if [[ "$STAGE_ZIP_URL" =~ /d/([^/]+) ]]; then
+    DRIVE_FILE_ID="${BASH_REMATCH[1]}"
+  elif [[ "$STAGE_ZIP_URL" =~ id=([^&]+) ]]; then
+    DRIVE_FILE_ID="${BASH_REMATCH[1]}"
+  fi
   if command -v gdown >/dev/null 2>&1; then
-    gdown --fuzzy "$STAGE_ZIP_URL" -O "$STAGE_ZIP_PATH"
+    if gdown --help 2>/dev/null | grep -q -- "--fuzzy"; then
+      gdown --fuzzy "$STAGE_ZIP_URL" -O "$STAGE_ZIP_PATH"
+    elif [ -n "$DRIVE_FILE_ID" ]; then
+      gdown "https://drive.google.com/uc?id=$DRIVE_FILE_ID" -O "$STAGE_ZIP_PATH"
+    else
+      gdown "$STAGE_ZIP_URL" -O "$STAGE_ZIP_PATH"
+    fi
   else
-    python -m gdown --fuzzy "$STAGE_ZIP_URL" -O "$STAGE_ZIP_PATH"
+    if python -m gdown --help 2>/dev/null | grep -q -- "--fuzzy"; then
+      python -m gdown --fuzzy "$STAGE_ZIP_URL" -O "$STAGE_ZIP_PATH"
+    elif [ -n "$DRIVE_FILE_ID" ]; then
+      python -m gdown "https://drive.google.com/uc?id=$DRIVE_FILE_ID" -O "$STAGE_ZIP_PATH"
+    else
+      python -m gdown "$STAGE_ZIP_URL" -O "$STAGE_ZIP_PATH"
+    fi
   fi
 else
   echo "==> Using existing zip: $STAGE_ZIP_PATH"
