@@ -17,9 +17,20 @@ echo "==> Installing OS packages"
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update
   apt-get install -y \
+    autoconf \
+    automake \
+    build-essential \
     ffmpeg \
     git \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-tools \
+    gtk-doc-tools \
+    libgstreamer-plugins-base1.0-dev \
+    libgstreamer1.0-dev \
+    libtool \
     libsndfile1 \
+    pkg-config \
     python3.10 \
     python3.10-venv \
     unzip \
@@ -94,6 +105,16 @@ fi
 if [ ! -d external/DDPM-Midi2Performance-Model/.git ]; then
   git clone https://github.com/FlyToYourMooN/DDPM-Midi2Performance-Model.git external/DDPM-Midi2Performance-Model
 fi
+if [ ! -d external/gstpeaq/.git ]; then
+  git clone https://github.com/HSU-ANT/gstpeaq.git external/gstpeaq
+fi
+
+echo "==> Building GstPEAQ"
+if [ ! -x external/gstpeaq/src/peaq ] || [ ! -f external/gstpeaq/src/.libs/libgstpeaq.so ]; then
+  (cd external/gstpeaq && ./autogen.sh && make -j"$(nproc)")
+else
+  echo "GstPEAQ binary/plugin already built."
+fi
 
 echo "==> Downloading CQT-Diff+ weights"
 if [ ! -f external/CQTdiff/experiments/cqt/cqt_weights.pt ]; then
@@ -130,6 +151,9 @@ export AUDIO_MAE_DIR="$PROJECT_ROOT/external/AudioMAE"
 export MIDI2PERFORMANCE_DIR="$PROJECT_ROOT/external/DDPM-Midi2Performance-Model"
 export CQTDIFF_WEIGHTS="$CQT_DIFF_DIR/experiments/cqt/cqt_weights.pt"
 export AUDIOMAE_CHECKPOINT="$AUDIO_MAE_DIR/ckpt/pretrained.pth"
+export GSTPEAQ_DIR="$PROJECT_ROOT/external/gstpeaq"
+export GSTPEAQ_BIN="$GSTPEAQ_DIR/src/peaq"
+export GSTPEAQ_PLUGIN="$GSTPEAQ_DIR/src/.libs/libgstpeaq.so"
 export OFFICIAL_CQTDIFF_ADAPTER=official_cqtdiff_adapter
 export MAID_ADAPTER=official_maid_adapter
 EOF

@@ -969,6 +969,11 @@ from scipy.linalg import sqrtm
 _VISQOL_FALLBACK_WARNED = False
 EVAL_USE_GPU = False
 EVAL_VISQOL_BACKEND = "visqol"
+EVAL_USE_GSTPEAQ = os.environ.get("EVAL_USE_GSTPEAQ", "1").lower() in {"1", "true", "yes"}
+GSTPEAQ_DIR = os.environ.get("GSTPEAQ_DIR", os.path.join(EXTERNAL_DIR, "gstpeaq"))
+GSTPEAQ_BIN = os.environ.get("GSTPEAQ_BIN", "")
+GSTPEAQ_PLUGIN = os.environ.get("GSTPEAQ_PLUGIN", "")
+GSTPEAQ_ADVANCED = os.environ.get("GSTPEAQ_ADVANCED", "0").lower() in {"1", "true", "yes"}
 
 
 def compute_lsd(original: np.ndarray, reconstructed: np.ndarray,
@@ -1303,10 +1308,92 @@ def compute_visqol_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int 
         ) from exc
 
 
-# Backward-compatible aliases.
-compute_peaq_odg = compute_visqol_odg
-compute_peaq = compute_visqol_odg
-compute_odg = compute_visqol_odg
+def _find_gstpeaq_binary():
+    import shutil
+
+    candidates = [
+        GSTPEAQ_BIN,
+        os.path.join(GSTPEAQ_DIR, "src", "peaq"),
+        os.path.join(GSTPEAQ_DIR, "src", "peaq.exe"),
+        shutil.which("peaq"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return os.path.abspath(path)
+    raise FileNotFoundError(
+        "Executable GstPEAQ 'peaq' tidak ditemukan. Build external/gstpeaq terlebih dahulu "
+        "atau set GSTPEAQ_BIN=/path/to/peaq. Set EVAL_USE_GSTPEAQ=0 hanya jika ingin skip PEAQ_ODG."
+    )
+
+
+def _find_gstpeaq_plugin():
+    candidates = [
+        GSTPEAQ_PLUGIN,
+        os.path.join(GSTPEAQ_DIR, "src", ".libs", "libgstpeaq.so"),
+        os.path.join(GSTPEAQ_DIR, "src", ".libs", "libgstpeaq.dylib"),
+        os.path.join(GSTPEAQ_DIR, "src", ".libs", "gstpeaq.dll"),
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return os.path.abspath(path)
+    return None
+
+
+def _write_peaq_wav(path, audio, sr):
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=-1)
+    audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+    if sr != 48000:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=48000).astype(np.float32)
+    audio = np.clip(audio, -1.0, 1.0)
+    sf.write(path, audio, 48000, subtype="PCM_16")
+
+
+def compute_gstpeaq_odg(original: np.ndarray, reconstructed: np.ndarray, sr: int = TARGET_SR):
+    """Hitung ODG PEAQ asli via GstPEAQ CLI. Ini metrik terpisah dari VISQOL_ODG."""
+    import re
+    import tempfile
+
+    peaq_bin = _find_gstpeaq_binary()
+    peaq_plugin = _find_gstpeaq_plugin()
+
+    min_len = min(len(original), len(reconstructed))
+    original = np.asarray(original[:min_len], dtype=np.float32)
+    reconstructed = np.asarray(reconstructed[:min_len], dtype=np.float32)
+
+    with tempfile.TemporaryDirectory(prefix="gstpeaq_", dir=PATHS["outputs"]) as tmpdir:
+        ref_path = os.path.join(tmpdir, "ref.wav")
+        test_path = os.path.join(tmpdir, "test.wav")
+        _write_peaq_wav(ref_path, original, sr)
+        _write_peaq_wav(test_path, reconstructed, sr)
+
+        cmd = [peaq_bin, "--gst-disable-segtrap"]
+        if peaq_plugin:
+            cmd.append(f"--gst-plugin-load={peaq_plugin}")
+        if GSTPEAQ_ADVANCED:
+            cmd.append("--advanced")
+        cmd.extend([ref_path, test_path])
+
+        env = os.environ.copy()
+        env["LC_ALL"] = "C"
+        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+        output = f"{proc.stdout}\n{proc.stderr}"
+        if proc.returncode != 0:
+            raise RuntimeError(f"GstPEAQ gagal dengan exit code {proc.returncode}: {output.strip()}")
+
+    match = re.search(r"Objective Difference Grade:\s*([-+]?\d+(?:\.\d+)?)", output)
+    if not match:
+        raise RuntimeError(f"Output GstPEAQ tidak memuat ODG: {output.strip()}")
+    odg = float(match.group(1))
+    if not np.isfinite(odg):
+        raise RuntimeError("GstPEAQ menghasilkan ODG NaN/Inf.")
+    return odg
+
+
+# Backward-compatible aliases for the actual GstPEAQ metric.
+compute_peaq_odg = compute_gstpeaq_odg
+compute_peaq = compute_gstpeaq_odg
 
 
 def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int = TARGET_SR):
@@ -1314,7 +1401,7 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
     Evaluasi semua gap duration untuk satu model.
 
     Returns:
-        DataFrame dengan kolom `gap_ms`, `LSD`, `FAD`, dan `VISQOL_ODG`.
+        DataFrame dengan kolom `gap_ms`, `LSD`, `FAD`, `VISQOL_ODG`, dan `PEAQ_ODG`.
     """
     results = []
     use_gpu_metrics = _eval_device().type == "cuda"
@@ -1359,17 +1446,24 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
                                               gap_start=gap_start, gap_end=gap_end))
                 visqol_odg_scores.append(compute_visqol_odg(orig, recon, sr))
 
+        peaq_odg_scores = []
+        if EVAL_USE_GSTPEAQ:
+            print("    Computing PEAQ_ODG via GstPEAQ...")
+            for orig, recon in zip(original_audios, recon_audios):
+                peaq_odg_scores.append(compute_gstpeaq_odg(orig, recon, sr))
+
         results.append({
             "gap_ms": gap_ms,
             "LSD": round(np.mean(lsd_scores), 4),
             "FAD": round(fad_score, 4),
             "VISQOL_ODG": round(np.mean(visqol_odg_scores), 4),
+            "PEAQ_ODG": round(np.mean(peaq_odg_scores), 4) if peaq_odg_scores else np.nan,
         })
 
     return pd.DataFrame(results)
 
 
-print("✅ Fungsi evaluasi (LSD, FAD, VISQOL_ODG) berhasil didefinisikan!")
+print("✅ Fungsi evaluasi (LSD, FAD, VISQOL_ODG, PEAQ_ODG) berhasil didefinisikan!")
 
 # ---
 # ## CELL 6 — Helper Functions
@@ -1633,6 +1727,7 @@ def update_experiment_summary():
             "final_LSD_mean": None,
             "final_FAD_mean": None,
             "final_VISQOL_ODG_mean": None,
+            "final_PEAQ_ODG_mean": None,
             "status": "pending",
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -1662,7 +1757,7 @@ def update_experiment_summary():
         if not results_df.empty and "model" in results_df.columns:
             r = results_df[results_df["model"] == model_name]
             if not r.empty:
-                for metric in ["LSD", "FAD", "VISQOL_ODG"]:
+                for metric in ["LSD", "FAD", "VISQOL_ODG", "PEAQ_ODG"]:
                     if metric in r.columns:
                         row[f"final_{metric}_mean"] = safe_float(r[metric].mean())
                 row["status"] = "evaluated"
@@ -2067,6 +2162,43 @@ def crossfade_boundary(original, reconstructed, gap_start, gap_end,
         )
 
     return output
+
+
+def reset_reconstructed_outputs(model_name: str):
+    """Kosongkan folder reconstructed audio untuk model yang sedang dievaluasi."""
+    import shutil
+
+    out_dir = os.path.join(PATHS["outputs"], model_name)
+    if os.path.isdir(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+
+def save_reconstructed_output(model_name: str, gap_ms: int, sample_index: int,
+                              reconstructed, sr: int = TARGET_SR):
+    """Simpan final reconstructed waveform yang dipakai oleh metrik evaluasi."""
+    out_dir = os.path.join(PATHS["outputs"], model_name, f"gap_{gap_ms}ms")
+    os.makedirs(out_dir, exist_ok=True)
+
+    audio = np.asarray(reconstructed, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=-1, dtype=np.float32)
+    audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+
+    filename = f"{model_name}_gap{gap_ms}ms_sample{sample_index:04d}_reconstructed.wav"
+    path = os.path.join(out_dir, filename)
+    sf.write(path, audio, sr, subtype="FLOAT")
+    return path
+
+
+def save_reconstruction_manifest(model_name: str, rows: list):
+    out_dir = os.path.join(PATHS["outputs"], model_name)
+    os.makedirs(out_dir, exist_ok=True)
+    manifest_path = os.path.join(out_dir, "manifest.csv")
+    pd.DataFrame(rows).to_csv(manifest_path, index=False)
+    print(f"💾 Reconstructed output manifest: {manifest_path}")
+    return manifest_path
 
 
 def _read_audio_float32(path):
@@ -3580,6 +3712,8 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     """
     evaluation_start = time.perf_counter()
     model_name = model_name_from_label(model_label)
+    reset_reconstructed_outputs(model_name)
+    output_manifest_rows = []
     original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
     reconstructed_dict = {}
 
@@ -3626,9 +3760,20 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                 )
 
             reconstructed_list.append(reconstructed)
+            output_path = save_reconstructed_output(model_name, gap_ms, index, reconstructed, TARGET_SR)
+            output_manifest_rows.append({
+                "model": model_name,
+                "gap_ms": gap_ms,
+                "sample_index": index,
+                "sr": TARGET_SR,
+                "n_samples": int(len(reconstructed)),
+                "duration_seconds": float(len(reconstructed) / TARGET_SR),
+                "reconstructed_path": output_path,
+            })
 
         reconstructed_dict[gap_ms] = reconstructed_list
 
+    save_reconstruction_manifest(model_name, output_manifest_rows)
     results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
     record_evaluation_timing(model_name, time.perf_counter() - evaluation_start, n_eval_samples)
     return results_df
@@ -3640,6 +3785,9 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
     Decoder dipakai langsung tanpa conditioning.
     """
     baseline_eval_start = time.perf_counter()
+    model_name = "baseline_cqtdiff"
+    reset_reconstructed_outputs(model_name)
+    output_manifest_rows = []
     original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
     reconstructed_dict = {}
 
@@ -3667,11 +3815,22 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
                 )
 
             reconstructed_list.append(reconstructed)
+            output_path = save_reconstructed_output(model_name, gap_ms, i, reconstructed, TARGET_SR)
+            output_manifest_rows.append({
+                "model": model_name,
+                "gap_ms": gap_ms,
+                "sample_index": i,
+                "sr": TARGET_SR,
+                "n_samples": int(len(reconstructed)),
+                "duration_seconds": float(len(reconstructed) / TARGET_SR),
+                "reconstructed_path": output_path,
+            })
 
         reconstructed_dict[gap_ms] = reconstructed_list
 
+    save_reconstruction_manifest(model_name, output_manifest_rows)
     results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
-    record_evaluation_timing("baseline_cqtdiff", time.perf_counter() - baseline_eval_start, n_eval_samples)
+    record_evaluation_timing(model_name, time.perf_counter() - baseline_eval_start, n_eval_samples)
     return results_df
 
 
@@ -4518,12 +4677,8 @@ else:
 
     # Backward compatibility untuk file hasil lama.
     if "VISQOL_ODG" not in all_results.columns:
-        if "PEAQ_ODG" in all_results.columns:
-            all_results["VISQOL_ODG"] = all_results["PEAQ_ODG"]
-        elif "PEAQ" in all_results.columns:
-            all_results["VISQOL_ODG"] = all_results["PEAQ"]
-        elif "ODG" in all_results.columns:
-            all_results["VISQOL_ODG"] = all_results["ODG"]
+        if "VISQOL" in all_results.columns:
+            all_results["VISQOL_ODG"] = all_results["VISQOL"]
 
     # Cek model mana yang sudah selesai
     available_models = all_results["model"].unique()
@@ -4538,7 +4693,7 @@ else:
     print("TABEL PERBANDINGAN LENGKAP")
     print("="*70)
 
-    metric_order = [m for m in ["LSD", "FAD", "VISQOL_ODG"] if m in all_results.columns]
+    metric_order = [m for m in ["LSD", "FAD", "VISQOL_ODG", "PEAQ_ODG"] if m in all_results.columns]
     for metric in metric_order:
         if metric in ["LSD", "FAD"]:
             direction = "↓ lebih rendah = lebih baik"
@@ -4581,6 +4736,9 @@ else:
         "VISQOL_ODG": {"title": "ViSQOL Objective Difference Grade",
                        "ylabel": "VISQOL_ODG Score",
                        "note": "↑ mendekati 0 = lebih baik"},
+        "PEAQ_ODG": {"title": "GstPEAQ Objective Difference Grade",
+                     "ylabel": "PEAQ_ODG Score",
+                     "note": "↑ mendekati 0 = lebih baik"},
     }
     metrics_info = {k: v for k, v in metrics_info.items() if k in metric_order}
 
@@ -4656,6 +4814,8 @@ else:
                 header_cols.append("ΔFAD")
             if "VISQOL_ODG" in all_results.columns:
                 header_cols.append("ΔVISQOL_ODG")
+            if "PEAQ_ODG" in all_results.columns:
+                header_cols.append("ΔPEAQ_ODG")
             print(f"  {header_cols[0]:<25} " + " ".join(f"{h:>10}" for h in header_cols[1:]))
             print(f"  {'-'*65}")
 
@@ -4673,6 +4833,8 @@ else:
                     deltas.append(bl["FAD"] - hybrid["FAD"])
                 if "VISQOL_ODG" in all_results.columns:
                     deltas.append(hybrid["VISQOL_ODG"] - bl["VISQOL_ODG"])
+                if "PEAQ_ODG" in all_results.columns:
+                    deltas.append(hybrid["PEAQ_ODG"] - bl["PEAQ_ODG"])
 
                 print(f"  {model_name:<25} " + " ".join(f"{d:>+10.4f}" for d in deltas))
 
