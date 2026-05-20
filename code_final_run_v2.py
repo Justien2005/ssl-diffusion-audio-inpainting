@@ -991,7 +991,6 @@ print("   baseline_cqtdiff: tidak menggunakan FiLM")
 import numpy as np
 import librosa
 import pandas as pd
-from scipy.linalg import sqrtm
 
 _VISQOL_FALLBACK_WARNED = False
 EVAL_USE_GPU = False
@@ -1111,19 +1110,25 @@ def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TAR
 
     sigma1 = np.cov(orig_features, rowvar=False) + 1e-6 * np.eye(d)
     sigma2 = np.cov(recon_features, rowvar=False) + 1e-6 * np.eye(d)
+    sigma1 = (sigma1 + sigma1.T) * 0.5
+    sigma2 = (sigma2 + sigma2.T) * 0.5
 
     diff = mu1 - mu2
     mean_diff = np.dot(diff, diff)
 
-    cov_prod = sigma1 @ sigma2
-    covmean, _ = sqrtm(cov_prod, disp=False)
-    if not np.isfinite(covmean).all():
+    def _psd_matrix_sqrt(mat, eps=1e-10):
+        mat = (mat + mat.T) * 0.5
+        vals, vecs = np.linalg.eigh(mat)
+        vals = np.clip(vals, eps, None)
+        return (vecs * np.sqrt(vals)) @ vecs.T
+
+    try:
+        sqrt_sigma1 = _psd_matrix_sqrt(sigma1)
+        covmean = _psd_matrix_sqrt(sqrt_sigma1 @ sigma2 @ sqrt_sigma1)
+    except np.linalg.LinAlgError:
         offset = np.eye(d) * 1e-5
-        covmean, _ = sqrtm((sigma1 + offset) @ (sigma2 + offset), disp=False)
-    if np.iscomplexobj(covmean):
-        if np.max(np.abs(covmean.imag)) > 1e-3:
-            raise RuntimeError("sqrtm covariance FAD menghasilkan komponen imajiner besar.")
-        covmean = covmean.real
+        sqrt_sigma1 = _psd_matrix_sqrt(sigma1 + offset)
+        covmean = _psd_matrix_sqrt(sqrt_sigma1 @ (sigma2 + offset) @ sqrt_sigma1)
 
     fad = mean_diff + np.trace(sigma1 + sigma2 - 2 * covmean)
     if not np.isfinite(fad):
