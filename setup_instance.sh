@@ -126,12 +126,13 @@ done
 # nsigtf.py: replace in-place overlap-add with out-of-place index_add
 # Prevents autograd errors if backbone is ever unfrozen for experiments
 NSIGTF="external/CQTdiff/src/nsgt/nsigtf.py"
-if grep -q 'fr\[:, :, wr1\] += t2' "$NSIGTF" 2>/dev/null; then
+if [ -f "$NSIGTF" ]; then
   python - "$NSIGTF" <<'PATCH'
 import sys
 path = sys.argv[1]
 with open(path) as f:
     text = f.read()
+original_text = text
 
 # Remove temp0 pre-allocation
 text = text.replace(
@@ -157,7 +158,7 @@ new_matrix = """            if Lg - r - l > 0:
                 temp = torch.cat([t[:, :, :r], middle, t[:, :, maxLg-l:maxLg]], dim=-1)
             else:
                 temp = torch.cat([t[:, :, :r], t[:, :, maxLg-l:maxLg]], dim=-1)
-            temp = temp * gdiis[i, :Lg] * maxLg
+            temp = (temp * gdiis[i, :Lg] * maxLg).to(dtype=fr.dtype)
 
             wr1_idx = torch.as_tensor(wr1, dtype=torch.long, device=torch.device(device))
             wr2_idx = torch.as_tensor(wr2, dtype=torch.long, device=torch.device(device))
@@ -183,7 +184,7 @@ new_bucket = """                if Lg - r - l > 0:
                     temp = torch.cat([t[:, :, :r], middle, t[:, :, Lg-l:Lg]], dim=-1)
                 else:
                     temp = torch.cat([t[:, :, :r], t[:, :, Lg-l:Lg]], dim=-1)
-                temp = temp * gdiis[freq_idx, :Lg] * Lg
+                temp = (temp * gdiis[freq_idx, :Lg] * Lg).to(dtype=fr.dtype)
 
                 wr1_idx = torch.as_tensor(wr1, dtype=torch.long, device=torch.device(device))
                 wr2_idx = torch.as_tensor(wr2, dtype=torch.long, device=torch.device(device))
@@ -193,14 +194,27 @@ new_bucket = """                if Lg - r - l > 0:
 
 if old_matrix in text and old_bucket in text:
     text = text.replace(old_matrix, new_matrix).replace(old_bucket, new_bucket)
+
+# Upgrade earlier versions of this patch that produced ComplexDouble temp tensors
+# when multiplying ComplexFloat data with float64 synthesis windows.
+text = text.replace(
+    "            temp = temp * gdiis[i, :Lg] * maxLg\n",
+    "            temp = (temp * gdiis[i, :Lg] * maxLg).to(dtype=fr.dtype)\n",
+)
+text = text.replace(
+    "                temp = temp * gdiis[freq_idx, :Lg] * Lg\n",
+    "                temp = (temp * gdiis[freq_idx, :Lg] * Lg).to(dtype=fr.dtype)\n",
+)
+
+if text != original_text:
     with open(path, "w") as f:
         f.write(text)
-    print(f"  Patched: {path} (autograd-safe index_add)")
+    print(f"  Patched: {path} (autograd-safe index_add + dtype compatibility)")
 else:
-    print(f"  Already patched or pattern mismatch: {path}")
+    print(f"  Already patched or not needed: {path}")
 PATCH
 else
-  echo "  Already patched or not needed: $NSIGTF"
+  echo "  Missing, skip patch: $NSIGTF"
 fi
 
 echo "==> Building GstPEAQ"
