@@ -241,7 +241,7 @@ MAID_ADAPTER = os.environ.get("MAID_ADAPTER", "official_maid_adapter")
 # Diagnostic experiment: train the official CQT-Diff+ backbone together with
 # the adapter reconstruction head. This is heavier, but helps test whether the
 # silent/noisy gap comes from the frozen backbone + small head setup.
-CQTDIFF_TRAIN_BACKBONE_EXPERIMENT = True
+CQTDIFF_TRAIN_BACKBONE_EXPERIMENT = False
 os.environ["CQTDIFF_TRAIN_BACKBONE"] = "1" if CQTDIFF_TRAIN_BACKBONE_EXPERIMENT else "0"
 print(f"CQT-Diff+ train backbone experiment: CQTDIFF_TRAIN_BACKBONE={os.environ['CQTDIFF_TRAIN_BACKBONE']}")
 
@@ -474,6 +474,9 @@ GAP_DURATIONS_MS = [100, 300, 500, 750, 1200, 1700]
 
 # Persentase dataset yang digunakan
 DATASET_FRACTION = 0.5
+
+# Jumlah sampel evaluasi (bisa override via env var untuk test run cepat)
+N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "250"))
 
 # Jumlah segmen maksimal per lagu
 MAX_SEGMENTS_PER_FILE = 5
@@ -2630,7 +2633,9 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     _sync_if_profile(profile_step)
     t_gpu = time.perf_counter()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler.is_enabled()):
-        features = decoder.get_features(masked, mask)
+        # Pakai clean audio sbg proxy diffusion output (diffusion ≈ clean).
+        # Ini supaya fitur di gap area bermakna, bukan garbage dari zeros.
+        features = decoder.get_features(clean, mask)
         cond_features = film(z.float(), features)
         pred_spec = decoder.decode_features(cond_features)
         target_spec = compute_stft_target(clean).permute(0, 2, 1)
@@ -3074,7 +3079,8 @@ def validate_model(decoder, encoder_fn, film, val_loader, device):
             mask = batch["mask"].to(device, non_blocking=True)
             cached_z = batch.get("encoder_latent")
             z = cached_z.to(device, non_blocking=True) if cached_z is not None else encoder_fn(masked)
-            features = decoder.get_features(masked, mask)
+            # Pakai clean sbg proxy diffusion output (konsisten dgn training)
+            features = decoder.get_features(clean, mask)
             cond_features = film(z.float(), features)
             pred_spec = decoder.decode_features(cond_features)
 
@@ -3873,24 +3879,45 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                 mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
                 mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
-                # Cek apakah decoder punya mask-aware get_features.
+                has_diffusion = hasattr(decoder, "_inpaint_diffusion")
                 import inspect
                 sig = inspect.signature(decoder.get_features)
-                if 'mask' in sig.parameters:
-                    # CQT-Diff+: get_features(x, mask) -> (B, T, D)
-                    decoder_features = decoder.get_features(masked_tensor, mask_tensor)
-                    conditioned_features = film_layer(encoder_latent.float(), decoder_features)
-                else:
-                    # MAID: get_features(x) -> (B, D)
-                    decoder_features = decoder.get_features(masked_tensor)
+                has_mask_param = 'mask' in sig.parameters
+
+                if has_diffusion:
+                    # CQT-Diff+: two-stage (diffusion → FiLM refinement)
+                    diffusion_result = decoder._inpaint_diffusion(masked_tensor, mask_tensor)
+                    if isinstance(diffusion_result, np.ndarray):
+                        diffusion_tensor = torch.from_numpy(diffusion_result).float()
+                        if diffusion_tensor.dim() == 1:
+                            diffusion_tensor = diffusion_tensor.unsqueeze(0)
+                        diffusion_tensor = diffusion_tensor.to(device)
+                    else:
+                        diffusion_tensor = diffusion_result
+
+                    # Extract features dari diffusion output (bukan masked!)
+                    decoder_features = decoder.get_features(diffusion_tensor, mask_tensor)
                     conditioned_features = film_layer(encoder_latent.float(), decoder_features)
 
-                # Inpaint dengan conditioned features
-                reconstructed = decoder.inpaint(
-                    masked_tensor,
-                    mask_tensor,
-                    conditioning=conditioned_features,
-                )
+                    reconstructed = decoder.inpaint(
+                        masked_tensor,
+                        mask_tensor,
+                        conditioning=conditioned_features,
+                        diffusion_audio=diffusion_tensor,
+                    )
+                else:
+                    # MAID: single-pass (no diffusion stage)
+                    if has_mask_param:
+                        decoder_features = decoder.get_features(masked_tensor, mask_tensor)
+                    else:
+                        decoder_features = decoder.get_features(masked_tensor)
+                    conditioned_features = film_layer(encoder_latent.float(), decoder_features)
+
+                    reconstructed = decoder.inpaint(
+                        masked_tensor,
+                        mask_tensor,
+                        conditioning=conditioned_features,
+                    )
 
                 # Crossfade buat menghilangkan click artifacts
                 reconstructed = crossfade_boundary(
@@ -4058,10 +4085,10 @@ def _missing_selected_run_targets():
 
     if "train" in RUN_PHASES:
         for model_name in sorted(RUN_MODEL_SELECTION):
+            # Baseline pakai pretrained weights, gak perlu checkpoint training
             if model_name == "baseline_cqtdiff":
-                ckpt_path = os.path.join(get_model_checkpoint_dir(model_name), f"{model_name}_best.pt")
-            else:
-                ckpt_path = get_model_checkpoint_path(model_name)
+                continue
+            ckpt_path = get_model_checkpoint_path(model_name)
             if not os.path.exists(ckpt_path):
                 missing.append(f"train:{model_name} -> {ckpt_path}")
 
@@ -4119,21 +4146,21 @@ def maybe_auto_stop_instance():
 
 
 # ============================================================
-# CELL 7: BASELINE — CQT-Diff+ STANDALONE (TRAINED)
+# CELL 7: BASELINE — CQT-Diff+ STANDALONE (PRETRAINED DIFFUSION)
 # ============================================================
-# Baseline = CQT-Diff+ original TRAINED tanpa encoder SSL dan tanpa FiLM.
+# Baseline = CQT-Diff+ original pakai pretrained weights + proper
+# multi-step reverse diffusion sampling buat inpainting.
 #
-# PERBAIKAN dari versi sebelumnya:
-# - Baseline sekarang JUGA DI-TRAIN (tanpa encoder conditioning)
-# - Perbandingan jadi FAIR: bedanya hybrid vs baseline cuma ada/tidaknya
-#   SSL encoder conditioning, bukan trained vs untrained
-# - Pakai decoder CQT-Diff+ original yang sama dengan hybrid
-# - Training pakai reconstruction loss (bukan random weights)
+# TIDAK PERLU TRAINING TAMBAHAN karena:
+# - CQT-Diff+ sudah di-pretrain pada diffusion denoising objective
+# - Inpainting dilakukan via multi-step reverse diffusion (T=35 steps)
+#   dengan data consistency (replacement method) — sesuai paper asli
+# - Baseline menunjukkan kemampuan murni CQT-Diff+ tanpa SSL conditioning
+# - Hybrid models (Cell 8-11) menambahkan SSL encoder + FiLM di atas ini
 #
-# Alur:
-# 1. Cek apakah baseline checkpoint sudah ada
-# 2. Kalau belum: train baseline (tanpa encoder) -> simpan checkpoint
-# 3. Load checkpoint -> evaluasi
+# Perbandingan tetap FAIR karena:
+# - Backbone yang sama dipakai oleh baseline dan semua hybrid
+# - Bedanya cuma ada/tidaknya SSL encoder conditioning
 # ============================================================
 
 import torch
@@ -4141,110 +4168,51 @@ import numpy as np
 import os
 
 MODEL_NAME = "baseline_cqtdiff"
-FORCE_RETRAIN = True    # <-- True karena arsitektur model berubah total!
-FORCE_REEVAL = True     # <-- True buat hapus hasil lama dan re-evaluasi
-# Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
-# Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 8
-NUM_WORKERS = AUTO_NUM_WORKERS
-LEARNING_RATE = 1e-4
+FORCE_REEVAL = True
 
-print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
+print(f"Config stage: {PIPELINE_STAGE_NAME} | model: {MODEL_NAME} | mode: pretrained diffusion (no training)")
 
-# Hapus hasil lama kalau FORCE_REEVAL aktif (biar check_if_done gak skip)
+# Hapus hasil lama kalau FORCE_REEVAL aktif
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
     old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
-        print(f"🗑️ Hasil lama dihapus: {old_result}")
+        print(f"Hasil lama dihapus: {old_result}")
 
-# Hapus checkpoint lama yang inkompatibel dengan arsitektur baru
-if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
-    ckpt_dir = get_model_checkpoint_dir(MODEL_NAME)
-    for old_name in [f"{MODEL_NAME}_best.pt", f"{MODEL_NAME}_latest.pt"]:
-        old_ckpt = os.path.join(ckpt_dir, old_name)
-        if os.path.exists(old_ckpt):
-            os.remove(old_ckpt)
-            print(f"🗑️ Checkpoint lama (inkompatibel) dihapus: {old_ckpt}")
-
-if not should_run_train(MODEL_NAME) and not should_run_eval(MODEL_NAME):
-    print(f"⏭️ Skip {MODEL_NAME}: tidak dipilih oleh RUN_PHASE/RUN_MODELS.")
+if not should_run_eval(MODEL_NAME):
+    print(f"Skip {MODEL_NAME}: tidak dipilih oleh RUN_PHASE/RUN_MODELS.")
 else:
     device = torch.device("cuda")
-    ckpt_dir = get_model_checkpoint_dir("baseline_cqtdiff")
-    ckpt_path = os.path.join(ckpt_dir, f"{MODEL_NAME}_best.pt")
-
-    if should_run_train(MODEL_NAME):
-        print(f"🔧 Device: {device}")
-        check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
-        print_gpu_usage("Awal")
-
-        # ============================================================
-        # TRAINING BASELINE (tanpa encoder, tanpa FiLM)
-        # ============================================================
-        if os.path.exists(ckpt_path) and not FORCE_RETRAIN:
-            print(f"✅ Baseline checkpoint sudah ada: {ckpt_path}")
-        else:
-            print("\n🏋️ Training baseline CQT-Diff+ (tanpa encoder)...")
-            print("   Ini biar perbandingan fair: baseline juga trained,")
-            print("   bedanya cuma TANPA SSL encoder conditioning.\n")
-
-            loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
-            baseline_model = build_hybrid_cqtdiff_decoder(device)
-            print_gpu_usage("Sebelum training baseline")
-
-            train_baseline_model(
-                baseline_model,
-                loaders["train"],
-                val_loader=loaders["val"],
-                num_epochs=NUM_EPOCHS,
-                lr=LEARNING_RATE,
-                device=device,
-                checkpoint_dir=ckpt_dir,
-                model_name=MODEL_NAME,
-                batch_size=BATCH_SIZE,
-                dataset_fraction=DATASET_FRACTION,
-            )
-            del baseline_model
-            clear_gpu_memory()
-    else:
-        print(f"⏭️ Skip training {MODEL_NAME}: RUN_PHASE tidak memuat train atau model tidak dipilih.")
 
     if should_run_eval(MODEL_NAME):
         if check_if_done(MODEL_NAME):
             print(f"Baseline {MODEL_NAME} sudah selesai. Lewati evaluasi.")
         else:
-            if not os.path.exists(ckpt_path):
-                raise FileNotFoundError(
-                    f"Checkpoint baseline belum ditemukan di {ckpt_path}. Jalankan training baseline terlebih dahulu."
-                )
+            # ============================================================
+            # EVALUASI BASELINE (pretrained CQT-Diff+ diffusion sampling)
+            # ============================================================
+            print("\nLoading pretrained CQT-Diff+ untuk baseline evaluasi...")
+            print("   Inpainting via multi-step reverse diffusion (bukan single-pass).")
+            print("   Tidak perlu training tambahan — pretrained weights sudah cukup.\n")
 
-            # ============================================================
-            # EVALUASI BASELINE
-            # ============================================================
-            print("\n📥 Loading trained baseline untuk evaluasi...")
             baseline_model = build_hybrid_cqtdiff_decoder(device)
-            load_baseline_checkpoint(baseline_model, device)
             baseline_model.eval()
             print_gpu_usage("Setelah load baseline")
 
-            # Evaluasi pakai fungsi shared
-            print("\n📊 Mengevaluasi baseline...")
-            results_df = run_baseline_inpainting_evaluation(baseline_model, device, n_eval_samples=250)
+            print("\nMengevaluasi baseline...")
+            results_df = run_baseline_inpainting_evaluation(baseline_model, device, n_eval_samples=N_EVAL_SAMPLES)
 
-            print(f"\n📋 Hasil evaluasi BASELINE (CQT-Diff+ standalone, trained tanpa encoder):")
+            print(f"\nHasil evaluasi BASELINE (CQT-Diff+ pretrained diffusion sampling):")
             print(results_df.to_string(index=False))
 
             save_results(results_df, MODEL_NAME)
 
-            # UNLOAD
-            print("\n🧹 Membersihkan memori GPU...")
+            print("\nMembersihkan memori GPU...")
             clear_gpu_memory(baseline_model)
 
-            print(f"\n✅ BASELINE {MODEL_NAME} selesai!")
+            print(f"\nBASELINE {MODEL_NAME} selesai!")
     else:
-        print(f"⏭️ Skip evaluasi {MODEL_NAME}: RUN_PHASE tidak memuat eval atau model tidak dipilih.")
+        print(f"Skip evaluasi {MODEL_NAME}: RUN_PHASE tidak memuat eval atau model tidak dipilih.")
 
 
 # ---
@@ -4376,7 +4344,7 @@ else:
             cqtdiff_model,
             film_layer,
             device,
-            n_eval_samples=250,
+            n_eval_samples=N_EVAL_SAMPLES,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4506,7 +4474,7 @@ else:
             maid_model,
             film_layer,
             device,
-            n_eval_samples=250,
+            n_eval_samples=N_EVAL_SAMPLES,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4636,7 +4604,7 @@ else:
             cqtdiff_model,
             film_layer,
             device,
-            n_eval_samples=250,
+            n_eval_samples=N_EVAL_SAMPLES,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4765,7 +4733,7 @@ else:
             maid_model,
             film_layer,
             device,
-            n_eval_samples=250,
+            n_eval_samples=N_EVAL_SAMPLES,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")

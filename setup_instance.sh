@@ -109,6 +109,96 @@ if [ ! -d external/gstpeaq/.git ]; then
   git clone https://github.com/HSU-ANT/gstpeaq.git external/gstpeaq
 fi
 
+echo "==> Patching CQTdiff for compatibility (numpy 2.x + autograd safety)"
+# nsgfwin.py: numpy 2.x casting rules (harmless on 1.x, prevents future breakage)
+NSGFWIN="external/CQTdiff/src/nsgt/nsgfwin.py"
+if grep -q 'np.clip(M, min_win, np.inf, out=M)' "$NSGFWIN" 2>/dev/null; then
+  sed -i 's/    np.clip(M, min_win, np.inf, out=M)/    M = np.clip(M, min_win, np.inf).astype(int)/' "$NSGFWIN"
+  echo "  Patched: $NSGFWIN (numpy clip compatibility)"
+else
+  echo "  Already patched or not needed: $NSGFWIN"
+fi
+
+# nsigtf.py: replace in-place overlap-add with out-of-place index_add
+# Prevents autograd errors if backbone is ever unfrozen for experiments
+NSIGTF="external/CQTdiff/src/nsgt/nsigtf.py"
+if grep -q 'fr\[:, :, wr1\] += t2' "$NSIGTF" 2>/dev/null; then
+  python - "$NSIGTF" <<'PATCH'
+import sys
+path = sys.argv[1]
+with open(path) as f:
+    text = f.read()
+
+# Remove temp0 pre-allocation
+text = text.replace(
+    "    temp0 = torch.empty(*cseq_shape[:2], maxLg, dtype=fr.dtype, device=torch.device(device))  # pre-allocation\n",
+    "",
+)
+
+# Patch matrixform branch
+old_matrix = """            t1 = temp0[:, :, :r]
+            t2 = temp0[:, :, Lg-l:Lg]
+
+            t1[:, :, :] = t[:, :, :r]
+            t2[:, :, :] = t[:, :, maxLg-l:maxLg]
+
+            temp0[:, :, :Lg] *= gdiis[i, :Lg] 
+            temp0[:, :, :Lg] *= maxLg
+
+            fr[:, :, wr1] += t2
+            fr[:, :, wr2] += t1
+"""
+new_matrix = """            if Lg - r - l > 0:
+                middle = torch.zeros(*cseq_shape[:2], Lg - r - l, dtype=fr.dtype, device=torch.device(device))
+                temp = torch.cat([t[:, :, :r], middle, t[:, :, maxLg-l:maxLg]], dim=-1)
+            else:
+                temp = torch.cat([t[:, :, :r], t[:, :, maxLg-l:maxLg]], dim=-1)
+            temp = temp * gdiis[i, :Lg] * maxLg
+
+            wr1_idx = torch.as_tensor(wr1, dtype=torch.long, device=torch.device(device))
+            wr2_idx = torch.as_tensor(wr2, dtype=torch.long, device=torch.device(device))
+            fr = torch.index_add(fr, 2, wr1_idx, temp[:, :, Lg-l:Lg])
+            fr = torch.index_add(fr, 2, wr2_idx, temp[:, :, :r])
+"""
+
+# Patch bucket branch
+old_bucket = """                t1 = temp0[:, :, :r]
+                t2 = temp0[:, :, Lg-l:Lg]
+
+                t1[:, :, :] = t[:, :, :r]
+                t2[:, :, :] = t[:, :, Lg-l:Lg]
+
+                temp0[:, :, :Lg] *= gdiis[freq_idx, :Lg] 
+                temp0[:, :, :Lg] *= Lg
+
+                fr[:, :, wr1] += t2
+                fr[:, :, wr2] += t1
+"""
+new_bucket = """                if Lg - r - l > 0:
+                    middle = torch.zeros(*cseq_shape[:2], Lg - r - l, dtype=fr.dtype, device=torch.device(device))
+                    temp = torch.cat([t[:, :, :r], middle, t[:, :, Lg-l:Lg]], dim=-1)
+                else:
+                    temp = torch.cat([t[:, :, :r], t[:, :, Lg-l:Lg]], dim=-1)
+                temp = temp * gdiis[freq_idx, :Lg] * Lg
+
+                wr1_idx = torch.as_tensor(wr1, dtype=torch.long, device=torch.device(device))
+                wr2_idx = torch.as_tensor(wr2, dtype=torch.long, device=torch.device(device))
+                fr = torch.index_add(fr, 2, wr1_idx, temp[:, :, Lg-l:Lg])
+                fr = torch.index_add(fr, 2, wr2_idx, temp[:, :, :r])
+"""
+
+if old_matrix in text and old_bucket in text:
+    text = text.replace(old_matrix, new_matrix).replace(old_bucket, new_bucket)
+    with open(path, "w") as f:
+        f.write(text)
+    print(f"  Patched: {path} (autograd-safe index_add)")
+else:
+    print(f"  Already patched or pattern mismatch: {path}")
+PATCH
+else
+  echo "  Already patched or not needed: $NSIGTF"
+fi
+
 echo "==> Building GstPEAQ"
 if [ ! -x external/gstpeaq/src/peaq ] || [ ! -f external/gstpeaq/src/.libs/libgstpeaq.so ]; then
   (cd external/gstpeaq && ./autogen.sh && make -j"$(nproc)")
@@ -156,6 +246,12 @@ export GSTPEAQ_BIN="$GSTPEAQ_DIR/src/peaq"
 export GSTPEAQ_PLUGIN="$GSTPEAQ_DIR/src/.libs/libgstpeaq.so"
 export OFFICIAL_CQTDIFF_ADAPTER=official_cqtdiff_adapter
 export MAID_ADAPTER=official_maid_adapter
+
+# CQT-Diff+ diffusion sampling config
+export CQTDIFF_DIFFUSION_STEPS="${CQTDIFF_DIFFUSION_STEPS:-35}"
+export CQTDIFF_DIFFUSION_XI="${CQTDIFF_DIFFUSION_XI:-0}"
+export CQTDIFF_SIGMA_MIN="${CQTDIFF_SIGMA_MIN:-1e-4}"
+export CQTDIFF_SIGMA_MAX="${CQTDIFF_SIGMA_MAX:-1.0}"
 EOF
 chmod +x env_instance.sh
 
@@ -178,7 +274,41 @@ api.create(mode="audio")
 result = api.measure_from_arrays(ref, deg, sample_rate=sr)
 print("visqol-python api create/measure: ok", float(result.moslqo))
 PY
-python -m py_compile code_it_v2.py code_final_run_v2.py official_cqtdiff_adapter.py official_maid_adapter.py
+python -m py_compile code_final_run_v2.py official_cqtdiff_adapter.py official_maid_adapter.py
+
+echo "==> CQT-Diff+ adapter smoke check"
+python - <<'PY'
+import os, sys, torch
+sys.path.insert(0, os.environ["PROJECT_ROOT"])
+sys.path.insert(0, os.environ["CQT_DIFF_DIR"])
+
+from official_cqtdiff_adapter import build_cqtdiff_decoder
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+decoder = build_cqtdiff_decoder(
+    device=device, target_sr=44100, segment_samples=176400,
+    gap_durations_ms=[500], cqt_diff_dir=os.environ["CQT_DIFF_DIR"],
+)
+decoder.eval()
+print(f"CQT-Diff+ adapter loaded OK on {device}")
+print(f"  Diffusion steps: {decoder.DIFFUSION_STEPS}")
+print(f"  Native SR: {decoder.native_sr}, Native len: {decoder.native_len}")
+print(f"  Backbone params: {sum(p.numel() for p in decoder.backbone.parameters()):,}")
+
+# Quick inpaint test (synthetic)
+import numpy as np
+audio = np.random.randn(176400).astype(np.float32) * 0.1
+mask = np.zeros(176400, dtype=bool)
+mask[77000:99000] = True
+audio[77000:99000] = 0.0
+
+with torch.inference_mode():
+    mt = torch.from_numpy(audio).float().unsqueeze(0).to(device)
+    mk = torch.from_numpy(mask).unsqueeze(0).to(device)
+    os.environ["CQTDIFF_DIFFUSION_STEPS"] = "3"
+    recon = decoder.inpaint(mt, mk, conditioning=None)
+    rms = np.sqrt(np.mean(recon[77000:99000] ** 2))
+    print(f"  Smoke inpaint (3 steps): gap RMS = {rms:.6f} {'OK' if rms > 0.001 else 'FAIL'}")
+PY
 
 echo "==> Setup complete"
 echo "Next:"
