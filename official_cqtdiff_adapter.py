@@ -332,7 +332,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
     # Diffusion sampling loop (Heun 2nd-order, sesuai src/sampler.py)
     # ================================================================
 
-    def _run_diffusion_sampling(self, y, mask, T=None):
+    def _run_diffusion_sampling(self, y, mask, T=None, show_progress=True):
         """
         Multi-step reverse diffusion inpainting (2nd-order Heun sampler).
 
@@ -351,7 +351,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
 
         self.backbone.eval()
         with torch.no_grad():
-            for i in tqdm(range(T), desc="Diffusion inpainting", leave=False):
+            for i in tqdm(range(T), desc="Diffusion inpainting", leave=False, disable=not show_progress):
                 # Stochastic injection (Langevin-style)
                 if gamma[i] == 0:
                     t_hat = t[i]
@@ -399,7 +399,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
     # Inpainting: baseline (diffusion) vs hybrid (reconstruction)
     # ================================================================
 
-    def _inpaint_diffusion(self, masked_audio, mask):
+    def _inpaint_diffusion(self, masked_audio, mask, T=None, show_progress=True):
         """
         Baseline inpainting: multi-step reverse diffusion.
 
@@ -456,7 +456,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         y = cqtdiff_mask * audio_crop
 
         # Jalankan multi-step reverse diffusion
-        x_hat = self._run_diffusion_sampling(y, cqtdiff_mask)
+        x_hat = self._run_diffusion_sampling(y, cqtdiff_mask, T=T, show_progress=show_progress)
         x_hat = self._apply_lowpass(x_hat)
 
         # Ambil konten gap dari hasil diffusion
@@ -575,9 +575,11 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             sigma = torch.full(
                 (native.shape[0], 1), self.sigma, device=native.device, dtype=torch.float32
             )
-            if any(param.requires_grad for param in self.backbone.parameters()):
+            backbone_trainable = any(param.requires_grad for param in self.backbone.parameters())
+            if backbone_trainable:
                 pred = self.backbone(native, sigma)
             else:
+                self.backbone.eval()
                 with torch.no_grad():
                     pred = self.backbone(native, sigma)
             return self._from_native(pred.float(), audio.shape[-1])

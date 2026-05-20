@@ -2553,6 +2553,53 @@ def compute_frame_mask(sample_mask, n_frames, hop_length=512):
 
 CQT_WAVEFORM_GAP_LOSS_WEIGHT = float(os.environ.get("CQT_WAVEFORM_GAP_LOSS_WEIGHT", "0.1"))
 CQT_ENERGY_LOSS_WEIGHT = float(os.environ.get("CQT_ENERGY_LOSS_WEIGHT", "0.05"))
+CQTDIFF_REFINEMENT_SOURCE = os.environ.get("CQTDIFF_REFINEMENT_SOURCE", "diffusion").strip().lower()
+CQTDIFF_TRAIN_DIFFUSION_STEPS = int(os.environ.get(
+    "CQTDIFF_TRAIN_DIFFUSION_STEPS",
+    os.environ.get("CQTDIFF_DIFFUSION_STEPS", "35"),
+))
+if CQTDIFF_REFINEMENT_SOURCE not in {"diffusion", "masked", "clean"}:
+    raise ValueError("CQTDIFF_REFINEMENT_SOURCE harus salah satu dari: diffusion, masked, clean")
+
+
+def build_cqtdiff_refinement_input(decoder, clean, masked, mask):
+    """
+    Input fitur untuk CQT-Diff refinement head.
+
+    Default memakai diffusion reconstruction agar training/validation selaras
+    dengan inference two-stage: masked -> diffusion reconstruction -> FiLM refine.
+    Mode clean hanya untuk ablation/debug karena bocor target gap.
+    """
+    if not hasattr(decoder, "_inpaint_diffusion"):
+        return masked
+
+    source = CQTDIFF_REFINEMENT_SOURCE
+    if source == "clean":
+        return clean
+    if source == "masked":
+        return masked
+
+    was_training = decoder.training
+    recon = []
+    with torch.no_grad():
+        for sample, sample_mask in zip(masked, mask):
+            result = decoder._inpaint_diffusion(
+                sample.unsqueeze(0),
+                sample_mask.unsqueeze(0),
+                T=CQTDIFF_TRAIN_DIFFUSION_STEPS,
+                show_progress=False,
+            )
+            if isinstance(result, np.ndarray):
+                result = torch.from_numpy(result).float()
+            if result.dim() == 1:
+                result = result.unsqueeze(0)
+            recon.append(result.squeeze(0).to(device=masked.device, dtype=masked.dtype))
+
+    if was_training:
+        decoder.train()
+    else:
+        decoder.eval()
+    return torch.stack(recon, dim=0)
 
 
 def spec_features_to_waveform(pred_spec, audio_length, n_fft=2048, hop_length=512):
@@ -2690,6 +2737,7 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     t_pre = time.perf_counter()
     with torch.no_grad():
         z = cached_z if cached_z is not None else encoder_fn(masked)
+        refinement_input = build_cqtdiff_refinement_input(decoder, clean, masked, mask)
     _sync_if_profile(profile_step)
     if profile_step:
         profile["preprocess_seconds"] = time.perf_counter() - t_pre
@@ -2700,9 +2748,8 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     _sync_if_profile(profile_step)
     t_gpu = time.perf_counter()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler.is_enabled()):
-        # Pakai clean audio sbg proxy diffusion output (diffusion ≈ clean).
-        # Ini supaya fitur di gap area bermakna, bukan garbage dari zeros.
-        features = decoder.get_features(clean, mask)
+        # Fitur refinement harus berasal dari diffusion reconstruction, sama seperti inference.
+        features = decoder.get_features(refinement_input, mask)
         cond_features = film(z.float(), features)
         pred_spec = decoder.decode_features(cond_features)
         target_spec = compute_stft_target(clean).permute(0, 2, 1)
@@ -3146,8 +3193,8 @@ def validate_model(decoder, encoder_fn, film, val_loader, device):
             mask = batch["mask"].to(device, non_blocking=True)
             cached_z = batch.get("encoder_latent")
             z = cached_z.to(device, non_blocking=True) if cached_z is not None else encoder_fn(masked)
-            # Pakai clean sbg proxy diffusion output (konsisten dgn training)
-            features = decoder.get_features(clean, mask)
+            refinement_input = build_cqtdiff_refinement_input(decoder, clean, masked, mask)
+            features = decoder.get_features(refinement_input, mask)
             cond_features = film(z.float(), features)
             pred_spec = decoder.decode_features(cond_features)
 
