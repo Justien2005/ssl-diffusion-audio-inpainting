@@ -66,6 +66,8 @@ class DiffusionParams:
         return t
 
     def sample_prior(self, shape, sigma):
+        if torch.is_tensor(sigma):
+            return torch.randn(shape, device=sigma.device, dtype=sigma.dtype) * sigma
         return torch.randn(shape) * sigma
 
     def get_gamma(self, t):
