@@ -110,14 +110,18 @@ if [ ! -d external/gstpeaq/.git ]; then
 fi
 
 echo "==> Patching CQTdiff for compatibility (numpy 2.x + autograd safety)"
-# nsgfwin.py: numpy 2.x casting rules (harmless on 1.x, prevents future breakage)
-NSGFWIN="external/CQTdiff/src/nsgt/nsgfwin.py"
-if grep -q 'np.clip(M, min_win, np.inf, out=M)' "$NSGFWIN" 2>/dev/null; then
-  sed -i 's/    np.clip(M, min_win, np.inf, out=M)/    M = np.clip(M, min_win, np.inf).astype(int)/' "$NSGFWIN"
-  echo "  Patched: $NSGFWIN (numpy clip compatibility)"
-else
-  echo "  Already patched or not needed: $NSGFWIN"
-fi
+# nsgfwin*.py: numpy 2.x casting rules (harmless on 1.x, prevents future breakage)
+for NSGFWIN in \
+  "external/CQTdiff/src/nsgt/nsgfwin.py" \
+  "external/CQTdiff/src/nsgt/nsgfwin_sl.py"
+do
+  if grep -q 'np.clip(M, min_win, np.inf, out=M)' "$NSGFWIN" 2>/dev/null; then
+    sed -i 's/    np.clip(M, min_win, np.inf, out=M)/    M = np.clip(M, min_win, np.inf).astype(int)/' "$NSGFWIN"
+    echo "  Patched: $NSGFWIN (numpy clip compatibility)"
+  else
+    echo "  Already patched or not needed: $NSGFWIN"
+  fi
+done
 
 # nsigtf.py: replace in-place overlap-add with out-of-place index_add
 # Prevents autograd errors if backbone is ever unfrozen for experiments
