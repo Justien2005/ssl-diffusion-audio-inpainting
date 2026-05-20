@@ -2254,6 +2254,31 @@ def load_reconstructed_output_if_available(model_name: str, gap_ms: int, sample_
         return None, path
 
 
+def summarize_reconstruction_cache(model_name: str, n_eval_samples: int):
+    """Print ringkasan cache rekonstruksi yang akan dipakai evaluator."""
+    total_expected = len(GAP_DURATIONS_MS) * int(n_eval_samples)
+    existing = 0
+    missing_examples = []
+
+    for gap_ms in GAP_DURATIONS_MS:
+        for sample_index in range(int(n_eval_samples)):
+            path = reconstructed_output_path(model_name, gap_ms, sample_index)
+            if os.path.exists(path):
+                existing += 1
+            elif len(missing_examples) < 3:
+                missing_examples.append(path)
+
+    print(
+        f"  Reconstruction cache probe: {existing}/{total_expected} WAV ditemukan "
+        f"di {os.path.join(PATHS['outputs'], model_name)}"
+    )
+    if missing_examples:
+        print("  Contoh path yang belum ada:")
+        for path in missing_examples:
+            print(f"   - {path}")
+    return existing, total_expected
+
+
 def save_reconstruction_manifest(model_name: str, rows: list):
     out_dir = os.path.join(PATHS["outputs"], model_name)
     os.makedirs(out_dir, exist_ok=True)
@@ -3903,6 +3928,7 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     print(f"\n🎵 Menjalankan inpainting {model_label}...")
     if EVAL_REUSE_RECONSTRUCTIONS:
         print("  Resume rekonstruksi aktif: WAV yang sudah ada akan dipakai ulang.")
+        summarize_reconstruction_cache(model_name, n_eval_samples)
     if EVAL_CLEAR_RECONSTRUCTIONS:
         print("  EVAL_CLEAR_RECONSTRUCTIONS aktif: output lama dibersihkan sebelum eval.")
 
@@ -4013,6 +4039,7 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
     print("\n🎵 Menjalankan baseline CQT-Diff+ (tanpa SSL encoder)...")
     if EVAL_REUSE_RECONSTRUCTIONS:
         print("  Resume rekonstruksi aktif: WAV yang sudah ada akan dipakai ulang.")
+        summarize_reconstruction_cache(model_name, n_eval_samples)
     if EVAL_CLEAR_RECONSTRUCTIONS:
         print("  EVAL_CLEAR_RECONSTRUCTIONS aktif: output lama dibersihkan sebelum eval.")
 
