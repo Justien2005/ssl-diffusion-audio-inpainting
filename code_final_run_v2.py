@@ -477,6 +477,8 @@ DATASET_FRACTION = 0.5
 
 # Jumlah sampel evaluasi (bisa override via env var untuk test run cepat)
 N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "250"))
+EVAL_REUSE_RECONSTRUCTIONS = os.environ.get("EVAL_REUSE_RECONSTRUCTIONS", "1").lower() in {"1", "true", "yes", "on"}
+EVAL_CLEAR_RECONSTRUCTIONS = os.environ.get("EVAL_CLEAR_RECONSTRUCTIONS", "0").lower() in {"1", "true", "yes", "on"}
 
 # Jumlah segmen maksimal per lagu
 MAX_SEGMENTS_PER_FILE = 5
@@ -2189,21 +2191,33 @@ def crossfade_boundary(original, reconstructed, gap_start, gap_end,
     return output
 
 
-def reset_reconstructed_outputs(model_name: str):
-    """Kosongkan folder reconstructed audio untuk model yang sedang dievaluasi."""
+def prepare_reconstructed_outputs(model_name: str, clear: bool = False):
+    """Siapkan folder reconstructed audio; hapus hanya jika diminta eksplisit."""
     import shutil
 
     out_dir = os.path.join(PATHS["outputs"], model_name)
-    if os.path.isdir(out_dir):
+    if clear and os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
 
 
+def reset_reconstructed_outputs(model_name: str):
+    """Backward-compatible helper untuk mengosongkan reconstructed audio."""
+    return prepare_reconstructed_outputs(model_name, clear=True)
+
+
+def reconstructed_output_path(model_name: str, gap_ms: int, sample_index: int):
+    out_dir = os.path.join(PATHS["outputs"], model_name, f"gap_{gap_ms}ms")
+    filename = f"{model_name}_gap{gap_ms}ms_sample{sample_index:04d}_reconstructed.wav"
+    return os.path.join(out_dir, filename)
+
+
 def save_reconstructed_output(model_name: str, gap_ms: int, sample_index: int,
                               reconstructed, sr: int = TARGET_SR):
     """Simpan final reconstructed waveform yang dipakai oleh metrik evaluasi."""
-    out_dir = os.path.join(PATHS["outputs"], model_name, f"gap_{gap_ms}ms")
+    path = reconstructed_output_path(model_name, gap_ms, sample_index)
+    out_dir = os.path.dirname(path)
     os.makedirs(out_dir, exist_ok=True)
 
     audio = np.asarray(reconstructed, dtype=np.float32)
@@ -2211,10 +2225,33 @@ def save_reconstructed_output(model_name: str, gap_ms: int, sample_index: int,
         audio = audio.mean(axis=-1, dtype=np.float32)
     audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
-    filename = f"{model_name}_gap{gap_ms}ms_sample{sample_index:04d}_reconstructed.wav"
-    path = os.path.join(out_dir, filename)
     sf.write(path, audio, sr, subtype="FLOAT")
     return path
+
+
+def load_reconstructed_output_if_available(model_name: str, gap_ms: int, sample_index: int,
+                                           expected_n_samples: int = None, sr: int = TARGET_SR):
+    """Load reconstructed WAV yang sudah ada; return (audio, path) atau (None, path)."""
+    path = reconstructed_output_path(model_name, gap_ms, sample_index)
+    if not EVAL_REUSE_RECONSTRUCTIONS or not os.path.exists(path):
+        return None, path
+
+    try:
+        info = sf.info(path)
+        if int(info.samplerate) != int(sr):
+            print(f"    Reconstruct cache ignored (SR mismatch): {path}")
+            return None, path
+        if expected_n_samples is not None and int(info.frames) != int(expected_n_samples):
+            print(f"    Reconstruct cache ignored (length mismatch): {path}")
+            return None, path
+        audio = _read_audio_float32(path)
+        if not np.isfinite(audio).all():
+            print(f"    Reconstruct cache ignored (non-finite audio): {path}")
+            return None, path
+        return audio, path
+    except Exception as exc:
+        print(f"    Reconstruct cache ignored ({exc}): {path}")
+        return None, path
 
 
 def save_reconstruction_manifest(model_name: str, rows: list):
@@ -3856,12 +3893,18 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     """
     evaluation_start = time.perf_counter()
     model_name = model_name_from_label(model_label)
-    reset_reconstructed_outputs(model_name)
+    prepare_reconstructed_outputs(model_name, clear=EVAL_CLEAR_RECONSTRUCTIONS)
     output_manifest_rows = []
     original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
     reconstructed_dict = {}
+    reused_count = 0
+    generated_count = 0
 
     print(f"\n🎵 Menjalankan inpainting {model_label}...")
+    if EVAL_REUSE_RECONSTRUCTIONS:
+        print("  Resume rekonstruksi aktif: WAV yang sudah ada akan dipakai ulang.")
+    if EVAL_CLEAR_RECONSTRUCTIONS:
+        print("  EVAL_CLEAR_RECONSTRUCTIONS aktif: output lama dibersihkan sebelum eval.")
 
     for gap_ms in GAP_DURATIONS_MS:
         print(f"\n  Gap {gap_ms}ms...")
@@ -3871,61 +3914,69 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
             if (index + 1) % 10 == 0:
                 print(f"    Sample {index+1}/{n_eval_samples}")
 
-            with torch.inference_mode():
-                # Encode masked audio pakai SSL encoder
-                encoder_latent = encoder_fn(masked_audio)
+            reconstructed, output_path = load_reconstructed_output_if_available(
+                model_name, gap_ms, index, expected_n_samples=len(orig_audio), sr=TARGET_SR
+            )
 
-                masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
-                mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
-                mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
+            if reconstructed is not None:
+                reused_count += 1
+            else:
+                with torch.inference_mode():
+                    # Encode masked audio pakai SSL encoder
+                    encoder_latent = encoder_fn(masked_audio)
 
-                has_diffusion = hasattr(decoder, "_inpaint_diffusion")
-                import inspect
-                sig = inspect.signature(decoder.get_features)
-                has_mask_param = 'mask' in sig.parameters
+                    masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
+                    mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
+                    mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
-                if has_diffusion:
-                    # CQT-Diff+: two-stage (diffusion → FiLM refinement)
-                    diffusion_result = decoder._inpaint_diffusion(masked_tensor, mask_tensor)
-                    if isinstance(diffusion_result, np.ndarray):
-                        diffusion_tensor = torch.from_numpy(diffusion_result).float()
-                        if diffusion_tensor.dim() == 1:
-                            diffusion_tensor = diffusion_tensor.unsqueeze(0)
-                        diffusion_tensor = diffusion_tensor.to(device)
+                    has_diffusion = hasattr(decoder, "_inpaint_diffusion")
+                    import inspect
+                    sig = inspect.signature(decoder.get_features)
+                    has_mask_param = 'mask' in sig.parameters
+
+                    if has_diffusion:
+                        # CQT-Diff+: two-stage (diffusion → FiLM refinement)
+                        diffusion_result = decoder._inpaint_diffusion(masked_tensor, mask_tensor)
+                        if isinstance(diffusion_result, np.ndarray):
+                            diffusion_tensor = torch.from_numpy(diffusion_result).float()
+                            if diffusion_tensor.dim() == 1:
+                                diffusion_tensor = diffusion_tensor.unsqueeze(0)
+                            diffusion_tensor = diffusion_tensor.to(device)
+                        else:
+                            diffusion_tensor = diffusion_result
+
+                        # Extract features dari diffusion output (bukan masked!)
+                        decoder_features = decoder.get_features(diffusion_tensor, mask_tensor)
+                        conditioned_features = film_layer(encoder_latent.float(), decoder_features)
+
+                        reconstructed = decoder.inpaint(
+                            masked_tensor,
+                            mask_tensor,
+                            conditioning=conditioned_features,
+                            diffusion_audio=diffusion_tensor,
+                        )
                     else:
-                        diffusion_tensor = diffusion_result
+                        # MAID: single-pass (no diffusion stage)
+                        if has_mask_param:
+                            decoder_features = decoder.get_features(masked_tensor, mask_tensor)
+                        else:
+                            decoder_features = decoder.get_features(masked_tensor)
+                        conditioned_features = film_layer(encoder_latent.float(), decoder_features)
 
-                    # Extract features dari diffusion output (bukan masked!)
-                    decoder_features = decoder.get_features(diffusion_tensor, mask_tensor)
-                    conditioned_features = film_layer(encoder_latent.float(), decoder_features)
+                        reconstructed = decoder.inpaint(
+                            masked_tensor,
+                            mask_tensor,
+                            conditioning=conditioned_features,
+                        )
 
-                    reconstructed = decoder.inpaint(
-                        masked_tensor,
-                        mask_tensor,
-                        conditioning=conditioned_features,
-                        diffusion_audio=diffusion_tensor,
+                    # Crossfade buat menghilangkan click artifacts
+                    reconstructed = crossfade_boundary(
+                        orig_audio, reconstructed, gap_start, gap_end,
                     )
-                else:
-                    # MAID: single-pass (no diffusion stage)
-                    if has_mask_param:
-                        decoder_features = decoder.get_features(masked_tensor, mask_tensor)
-                    else:
-                        decoder_features = decoder.get_features(masked_tensor)
-                    conditioned_features = film_layer(encoder_latent.float(), decoder_features)
-
-                    reconstructed = decoder.inpaint(
-                        masked_tensor,
-                        mask_tensor,
-                        conditioning=conditioned_features,
-                    )
-
-                # Crossfade buat menghilangkan click artifacts
-                reconstructed = crossfade_boundary(
-                    orig_audio, reconstructed, gap_start, gap_end,
-                )
+                output_path = save_reconstructed_output(model_name, gap_ms, index, reconstructed, TARGET_SR)
+                generated_count += 1
 
             reconstructed_list.append(reconstructed)
-            output_path = save_reconstructed_output(model_name, gap_ms, index, reconstructed, TARGET_SR)
             output_manifest_rows.append({
                 "model": model_name,
                 "gap_ms": gap_ms,
@@ -3939,6 +3990,7 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
         reconstructed_dict[gap_ms] = reconstructed_list
 
     save_reconstruction_manifest(model_name, output_manifest_rows)
+    print(f"  Rekonstruksi reused/generated: {reused_count}/{generated_count}")
     results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
     record_evaluation_timing(model_name, time.perf_counter() - evaluation_start, n_eval_samples)
     return results_df
@@ -3951,12 +4003,18 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
     """
     baseline_eval_start = time.perf_counter()
     model_name = "baseline_cqtdiff"
-    reset_reconstructed_outputs(model_name)
+    prepare_reconstructed_outputs(model_name, clear=EVAL_CLEAR_RECONSTRUCTIONS)
     output_manifest_rows = []
     original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
     reconstructed_dict = {}
+    reused_count = 0
+    generated_count = 0
 
     print("\n🎵 Menjalankan baseline CQT-Diff+ (tanpa SSL encoder)...")
+    if EVAL_REUSE_RECONSTRUCTIONS:
+        print("  Resume rekonstruksi aktif: WAV yang sudah ada akan dipakai ulang.")
+    if EVAL_CLEAR_RECONSTRUCTIONS:
+        print("  EVAL_CLEAR_RECONSTRUCTIONS aktif: output lama dibersihkan sebelum eval.")
 
     for gap_ms in GAP_DURATIONS_MS:
         print(f"\n  Gap {gap_ms}ms...")
@@ -3966,21 +4024,29 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
             if (i + 1) % 10 == 0:
                 print(f"    Sample {i+1}/{n_eval_samples}")
 
-            with torch.inference_mode():
-                masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
-                mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
-                mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
+            reconstructed, output_path = load_reconstructed_output_if_available(
+                model_name, gap_ms, i, expected_n_samples=len(orig_audio), sr=TARGET_SR
+            )
 
-                # Baseline: conditioning=None
-                reconstructed = decoder.inpaint(
-                    masked_tensor, mask_tensor, conditioning=None,
-                )
-                reconstructed = crossfade_boundary(
-                    orig_audio, reconstructed, gap_start, gap_end,
-                )
+            if reconstructed is not None:
+                reused_count += 1
+            else:
+                with torch.inference_mode():
+                    masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
+                    mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
+                    mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
+
+                    # Baseline: conditioning=None
+                    reconstructed = decoder.inpaint(
+                        masked_tensor, mask_tensor, conditioning=None,
+                    )
+                    reconstructed = crossfade_boundary(
+                        orig_audio, reconstructed, gap_start, gap_end,
+                    )
+                output_path = save_reconstructed_output(model_name, gap_ms, i, reconstructed, TARGET_SR)
+                generated_count += 1
 
             reconstructed_list.append(reconstructed)
-            output_path = save_reconstructed_output(model_name, gap_ms, i, reconstructed, TARGET_SR)
             output_manifest_rows.append({
                 "model": model_name,
                 "gap_ms": gap_ms,
@@ -3994,6 +4060,7 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
         reconstructed_dict[gap_ms] = reconstructed_list
 
     save_reconstruction_manifest(model_name, output_manifest_rows)
+    print(f"  Rekonstruksi reused/generated: {reused_count}/{generated_count}")
     results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
     record_evaluation_timing(model_name, time.perf_counter() - baseline_eval_start, n_eval_samples)
     return results_df
