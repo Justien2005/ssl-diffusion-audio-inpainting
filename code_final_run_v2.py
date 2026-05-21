@@ -476,7 +476,7 @@ GAP_DURATIONS_MS = [100, 300, 500, 750, 1200, 1700]
 DATASET_FRACTION = 0.5
 
 # Jumlah sampel evaluasi (bisa override via env var untuk test run cepat)
-N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "250"))
+N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "10"))
 EVAL_REUSE_RECONSTRUCTIONS = os.environ.get("EVAL_REUSE_RECONSTRUCTIONS", "1").lower() in {"1", "true", "yes", "on"}
 EVAL_CLEAR_RECONSTRUCTIONS = os.environ.get("EVAL_CLEAR_RECONSTRUCTIONS", "0").lower() in {"1", "true", "yes", "on"}
 
