@@ -31,7 +31,13 @@ python code_final_run_v2.py \
     --models baseline_cqtdiff
 
 echo ""
-echo "==> Phase 2: Train + eval clap_cqtdiff (10 epochs, reduced eval)"
+echo "==> Phase 2: Train + eval baseline_cqtdiff_finetuned (ablation: no SSL)"
+python code_final_run_v2.py \
+    --phase train,eval \
+    --models baseline_cqtdiff_finetuned
+
+echo ""
+echo "==> Phase 3: Train + eval clap_cqtdiff (10 epochs, reduced eval)"
 python code_final_run_v2.py \
     --phase train,eval \
     --models clap_cqtdiff
@@ -43,7 +49,8 @@ echo "============================================"
 echo ""
 echo "Cek hasilnya:"
 echo "  1. Baseline: pastikan gap RMS non-zero di results CSV"
-echo "  2. clap_cqtdiff: pastikan training loss turun + metrics > baseline"
+echo "  2. baseline_cqtdiff_finetuned: pastikan training loss turun (ablation tanpa SSL)"
+echo "  3. clap_cqtdiff: pastikan training loss turun + metrics > finetuned baseline"
 echo ""
 echo "Jika OK, jalankan full run:"
 echo "  bash run_full.sh"

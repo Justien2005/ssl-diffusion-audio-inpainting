@@ -279,7 +279,7 @@ for name, path in PATHS.items():
     print(f"Folder '{name}': {path}")
 
 # Buat subfolder output untuk setiap model (termasuk baseline)
-ALL_MODELS = ["baseline_cqtdiff", "clap_cqtdiff", "clap_maid", "audiomae_cqtdiff", "audiomae_maid"]
+ALL_MODELS = ["baseline_cqtdiff", "baseline_cqtdiff_finetuned", "clap_cqtdiff", "clap_maid", "audiomae_cqtdiff", "audiomae_maid"]
 for model in ALL_MODELS:
     os.makedirs(os.path.join(PATHS["outputs"], model), exist_ok=True)
     os.makedirs(os.path.join(PATHS["checkpoints"], model), exist_ok=True)
@@ -949,6 +949,7 @@ class FiLMLayer(nn.Module):
 # encoder_dim        : ukuran output latent encoder
 # decoder_feature_dim: ukuran fitur internal decoder yang dimodulasi
 FILM_CONFIGS = {
+    "baseline_cqtdiff_finetuned": {"encoder_dim": 512, "decoder_feature_dim": 256},
     "clap_cqtdiff":     {"encoder_dim": 512, "decoder_feature_dim": 256},
     "clap_maid":        {"encoder_dim": 512, "decoder_feature_dim": 512},
     "audiomae_cqtdiff": {"encoder_dim": 768, "decoder_feature_dim": 256},
@@ -959,9 +960,10 @@ FILM_CONFIGS = {
 print("✅ FiLMLayer berhasil didefinisikan!")
 print("\n📋 Konfigurasi FiLM per kombinasi:")
 for combo, cfg in FILM_CONFIGS.items():
+    note = " (zero encoder — ablation)" if combo == "baseline_cqtdiff_finetuned" else ""
     print(f"   {combo}: encoder_dim={cfg['encoder_dim']}, "
-          f"decoder_feature_dim={cfg['decoder_feature_dim']}")
-print("   baseline_cqtdiff: tidak menggunakan FiLM")
+          f"decoder_feature_dim={cfg['decoder_feature_dim']}{note}")
+print("   baseline_cqtdiff: tidak menggunakan FiLM (pretrained only)")
 
 # ---
 # ## CELL 5 — Fungsi Evaluasi (LSD, FAD, VISQOL_ODG)
@@ -1601,6 +1603,7 @@ def save_results(results_df: pd.DataFrame, model_name: str):
 
 EXPECTED_MODEL_CONFIGS = [
     "baseline_cqtdiff",
+    "baseline_cqtdiff_finetuned",
     "clap_cqtdiff",
     "clap_maid",
     "audiomae_cqtdiff",
@@ -1928,9 +1931,9 @@ def print_final_training_summary(available_models=None):
     print("="*70)
     print(f"Stage: {globals().get('PIPELINE_STAGE_NAME', 'code_v3')}")
     print(f"Dataset fraction: {globals().get('DATASET_FRACTION', 'unknown')}")
-    print("Total configurations: 5")
+    print(f"Total configurations: {len(EXPECTED_MODEL_CONFIGS)}")
     for model_name in EXPECTED_MODEL_CONFIGS:
-        kind = "baseline" if model_name == "baseline_cqtdiff" else "hybrid"
+        kind = "baseline" if model_name.startswith("baseline_") else "hybrid"
         status = "evaluated" if model_name in available_models else "pending/no results yet"
         print(f"  - {model_name:<20} | {kind:<8} | {status}")
     print_training_timing_summary(EXPECTED_MODEL_CONFIGS)
@@ -3177,6 +3180,7 @@ def validate_model(decoder, encoder_fn, film, val_loader, device):
                     masked,
                     mask=mask,
                     conditioning=cond_features,
+                    deterministic_sigma=True,
                 )
                 val_loss = loss_parts["loss"]
             else:
@@ -3891,7 +3895,7 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                     mask_b = batch["mask"].to(device, non_blocking=True)
                     cached_z = batch.get("encoder_latent")
                     z = cached_z.to(device, non_blocking=True) if cached_z is not None else encoder_fn(masked)
-                    decoder_features = decoder.get_features(masked)
+                    decoder_features = decoder.get_features(masked, mask_b)
                     conditioned_features = film(z.float(), decoder_features)
                     if hasattr(decoder, "diffusion_loss"):
                         loss_parts = decoder.diffusion_loss(
@@ -3899,6 +3903,7 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                             masked,
                             mask=mask_b,
                             conditioning=conditioned_features,
+                            deterministic_sigma=True,
                         )
                         batch_val_loss = loss_parts.get("gap_loss", loss_parts["loss"])
                     else:
@@ -4358,8 +4363,168 @@ else:
 
 
 # ---
+# ## CELL 7B — BASELINE FINE-TUNED: Conditioning Head tanpa SSL
+#
+# Ablation baseline: conditioning head yang sama (FiLM + spec_decoder +
+# condition_gate + sigma_scale_net) di-train pada MusicNet, tapi
+# TANPA SSL encoder (input encoder selalu zeros).
+#
+# Tujuan: memisahkan efek domain adaptation (fine-tuning pada MusicNet)
+# dari kontribusi spesifik SSL encoder (CLAP/AudioMAE).
+#
+# Perbandingan yang fair:
+# - baseline_cqtdiff:           pretrained, tanpa fine-tuning, tanpa SSL
+# - baseline_cqtdiff_finetuned: fine-tuned conditioning head, tanpa SSL
+# - clap_cqtdiff:               fine-tuned conditioning head, DENGAN SSL
+#
+# Jika clap_cqtdiff > baseline_cqtdiff_finetuned → SSL memberikan
+# kontribusi nyata di atas fine-tuning.
+
+
+# ============================================================
+# CELL 7B-A: TRAINING — BASELINE FINE-TUNED (tanpa SSL encoder)
+# ============================================================
+
+MODEL_NAME = "baseline_cqtdiff_finetuned"
+FORCE_RETRAIN = True
+BATCH_SIZE = 8
+NUM_WORKERS = AUTO_NUM_WORKERS
+NUM_EPOCHS = 10
+LEARNING_RATE = 1e-4
+
+print(f"Config stage: {PIPELINE_STAGE_NAME} | model: {MODEL_NAME} | "
+      f"dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
+
+assert NUM_EPOCHS >= 5, "NUM_EPOCHS minimal 5 agar checkpoint best tervalidasi bisa tersimpan."
+
+if should_run_train(MODEL_NAME) and FORCE_RETRAIN:
+    reset_training_checkpoints_if_requested(MODEL_NAME, FORCE_RETRAIN)
+
+ckpt_path = get_model_checkpoint_path(MODEL_NAME)
+if not should_run_train(MODEL_NAME):
+    print(f"Skip training {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif hybrid_checkpoint_exists(MODEL_NAME) and not FORCE_RETRAIN:
+    print(f"Checkpoint sudah ada. Skip training: {ckpt_path}")
+else:
+    device = torch.device("cuda")
+    cqtdiff_model = None
+    film_layer = None
+
+    try:
+        print(f"Device: {device}")
+        check_batch_size_memory(BATCH_SIZE, min_expected_vram_gb=8.0)
+
+        loaders = make_dataloaders(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS)
+
+        _ft_encoder_dim = FILM_CONFIGS[MODEL_NAME]["encoder_dim"]
+
+        def _zero_encoder_fn(audio_input):
+            """Dummy encoder: selalu return zeros (tanpa SSL)."""
+            if isinstance(audio_input, np.ndarray):
+                return torch.zeros(1, _ft_encoder_dim, device=device)
+            if isinstance(audio_input, torch.Tensor):
+                return torch.zeros(audio_input.shape[0], _ft_encoder_dim, device=device)
+            return torch.zeros(1, _ft_encoder_dim, device=device)
+
+        loaders = add_encoder_cache_to_loaders(
+            loaders, _zero_encoder_fn, device, MODEL_NAME, num_workers=NUM_WORKERS
+        )
+        cqtdiff_model = build_hybrid_cqtdiff_decoder(device)
+        film_layer = build_film_layer(MODEL_NAME, device)
+
+        print_gpu_usage("Sebelum training")
+        train_model(
+            cqtdiff_model,
+            _zero_encoder_fn,
+            film_layer,
+            loaders["train"],
+            val_loader=loaders["val"],
+            num_epochs=NUM_EPOCHS,
+            lr=LEARNING_RATE,
+            device=device,
+            checkpoint_dir=get_model_checkpoint_dir(MODEL_NAME),
+            model_name=MODEL_NAME,
+            batch_size=BATCH_SIZE,
+            dataset_fraction=DATASET_FRACTION,
+        )
+
+        if not hybrid_checkpoint_exists(MODEL_NAME):
+            raise RuntimeError(f"Checkpoint {MODEL_NAME} tidak tersimpan.")
+
+        print(f"Training selesai. Checkpoint siap dipakai: {ckpt_path}")
+    finally:
+        clear_gpu_memory(cqtdiff_model, film_layer)
+
+
+# ============================================================
+# CELL 7B: EVALUASI — BASELINE FINE-TUNED (tanpa SSL encoder)
+# ============================================================
+
+MODEL_NAME = "baseline_cqtdiff_finetuned"
+FORCE_REEVAL = True
+
+if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
+    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    if os.path.exists(old_result):
+        os.remove(old_result)
+        print(f"Hasil lama dihapus: {old_result}")
+
+if not should_run_eval(MODEL_NAME):
+    print(f"Skip evaluasi {MODEL_NAME}: RUN_PHASE/RUN_MODELS tidak memilih blok ini.")
+elif check_if_done(MODEL_NAME):
+    print(f"Model {MODEL_NAME} sudah selesai. Lewati cell ini.")
+else:
+    ckpt_path = get_model_checkpoint_path(MODEL_NAME)
+    if not hybrid_checkpoint_exists(MODEL_NAME):
+        raise FileNotFoundError(
+            f"Checkpoint {MODEL_NAME} belum ditemukan di {ckpt_path}. "
+            "Jalankan CELL 7B-A terlebih dahulu."
+        )
+
+    device = torch.device("cuda")
+    cqtdiff_model = None
+    film_layer = None
+
+    try:
+        print_gpu_usage("Awal")
+        print(f"Menggunakan checkpoint: {ckpt_path}")
+
+        _ft_encoder_dim = FILM_CONFIGS[MODEL_NAME]["encoder_dim"]
+
+        def _zero_encoder_fn(audio_input):
+            """Dummy encoder: selalu return zeros (tanpa SSL)."""
+            if isinstance(audio_input, np.ndarray):
+                return torch.zeros(1, _ft_encoder_dim, device=device)
+            if isinstance(audio_input, torch.Tensor):
+                return torch.zeros(audio_input.shape[0], _ft_encoder_dim, device=device)
+            return torch.zeros(1, _ft_encoder_dim, device=device)
+
+        cqtdiff_model = build_hybrid_cqtdiff_decoder(device)
+        film_layer = build_film_layer(MODEL_NAME, device)
+        load_hybrid_checkpoint(MODEL_NAME, cqtdiff_model, film_layer, device)
+        print_gpu_usage("Setelah load model terlatih")
+
+        results_df = run_hybrid_inpainting_evaluation(
+            "Baseline Fine-tuned (no SSL)",
+            _zero_encoder_fn,
+            cqtdiff_model,
+            film_layer,
+            device,
+            n_eval_samples=N_EVAL_SAMPLES,
+        )
+
+        print(f"\nHasil {MODEL_NAME}:")
+        print(results_df.to_string(index=False))
+        save_results(results_df, MODEL_NAME)
+    finally:
+        clear_gpu_memory(cqtdiff_model, film_layer)
+
+    print(f"\nBASELINE FINE-TUNED {MODEL_NAME} selesai!")
+
+
+# ---
 # ## CELL 8 — Kombinasi 1: CLAP + CQT-Diff+
-# 
+#
 # Model hybrid pertama. Dibandingkan dengan baseline di Cell 7,
 # perbedaannya hanya penambahan **CLAP encoder + FiLM conditioning**.
 

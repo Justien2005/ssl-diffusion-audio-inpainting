@@ -313,6 +313,15 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         nn.init.zeros_(self.condition_gate[-1].weight)
         nn.init.constant_(self.condition_gate[-1].bias, -2.0)
 
+        # σ-adaptive scaling: residual magnitude varies with noise level
+        self.sigma_scale_net = nn.Sequential(
+            nn.Linear(1, 64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
+        )
+        nn.init.zeros_(self.sigma_scale_net[-1].weight)
+        nn.init.zeros_(self.sigma_scale_net[-1].bias)
+
     # ================================================================
     # Utility: resample + pad/crop
     # ================================================================
@@ -390,16 +399,21 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
 
     def _conditioned_model(self, conditioning, target_len):
         """
-        Bungkus backbone official dengan residual conditioning SSL.
+        Bungkus backbone official dengan σ-adaptive residual conditioning SSL.
 
         Signature mengikuti Unet_CQT(x, sigma) agar bisa dipakai langsung oleh
         DiffusionParams.denoiser selama reverse diffusion.
+
+        Residual di-scale oleh sigma_scale_net(σ) sehingga magnitude
+        conditioning bisa beradaptasi terhadap noise level: coarse guidance
+        di σ tinggi vs fine detail di σ rendah.
         """
         cond_wave_target = self._conditioning_to_waveform(conditioning, target_len)
         if cond_wave_target is None:
             return self.backbone
 
         cond_wave_native = self._to_native(cond_wave_target)
+        sigma_scale_fn = self.sigma_scale_net
 
         def model(x, sigma):
             backbone_trainable = any(param.requires_grad for param in self.backbone.parameters())
@@ -412,7 +426,15 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             residual = cond_wave_native.to(device=x.device, dtype=x.dtype)
             if residual.shape[0] != x.shape[0]:
                 residual = residual.expand(x.shape[0], -1)
-            return base + residual
+
+            # sigma is cnoise-transformed: (1/4)*log(raw_sigma), shape (B,1) or (1,1)
+            sigma_val = sigma
+            if sigma_val.dim() == 0:
+                sigma_val = sigma_val.view(1, 1)
+            elif sigma_val.dim() == 1:
+                sigma_val = sigma_val.unsqueeze(-1)
+            scale = 1.0 + sigma_scale_fn(sigma_val)
+            return base + scale * residual
 
         return model
 
@@ -580,13 +602,19 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         out = output.detach().cpu().numpy()
         return out[0] if B == 1 else out
 
-    def diffusion_loss(self, clean_audio, masked_audio, mask, conditioning=None):
+    _DETERMINISTIC_SIGMA_STEPS = 8
+
+    def diffusion_loss(self, clean_audio, masked_audio, mask, conditioning=None,
+                       deterministic_sigma=False):
         """
         Denoising objective untuk hybrid CQT-Diff.
 
         Representasi SSL masuk ke denoiser diffusion melalui conditioning.
         Loss dihitung pada gap region sehingga model belajar mengisi bagian
         hilang dengan bantuan SSL, bukan merefine hasil sampling setelahnya.
+
+        deterministic_sigma: jika True, gunakan set sigma tetap agar validation
+        loss stabil dan reproducible antar epoch.
         """
         clean_native = self._to_native(clean_audio).float()
         masked_native = self._to_native(masked_audio).float()
@@ -594,12 +622,22 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         gap_mask = 1.0 - keep_mask
 
         batch_size = clean_native.shape[0]
-        sigma = torch.exp(
-            torch.empty(batch_size, 1, device=clean_native.device).uniform_(
+        if deterministic_sigma:
+            log_sigma_grid = torch.linspace(
                 np.log(self.DIFFUSION_SIGMA_MIN),
                 np.log(self.DIFFUSION_SIGMA_MAX),
+                steps=self._DETERMINISTIC_SIGMA_STEPS,
+                device=clean_native.device,
             )
-        )
+            idx = torch.arange(batch_size, device=clean_native.device) % self._DETERMINISTIC_SIGMA_STEPS
+            sigma = torch.exp(log_sigma_grid[idx]).unsqueeze(1)
+        else:
+            sigma = torch.exp(
+                torch.empty(batch_size, 1, device=clean_native.device).uniform_(
+                    np.log(self.DIFFUSION_SIGMA_MIN),
+                    np.log(self.DIFFUSION_SIGMA_MAX),
+                )
+            )
         noise = torch.randn_like(clean_native) * sigma
         x_noisy = keep_mask * masked_native + gap_mask * (clean_native + noise)
 
