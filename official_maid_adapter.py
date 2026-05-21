@@ -267,16 +267,29 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         return pooled.bool()
 
     def get_features(self, x):
-        _, mel_norm = self.audio_to_mel_batch(x)
-        pooled = mel_norm.mean(dim=-1)
-        return self.feature_pool(pooled)
+        # FIX 5: ganti global mean pooling → per-frame features (B, T, feature_dim).
+        # Sebelumnya mel_norm.mean(dim=-1) menghilangkan seluruh info temporal,
+        # sehingga FiLM memberi conditioning yang sama untuk semua frame.
+        # Sekarang setiap frame punya representasinya sendiri agar model tahu
+        # posisi dan konteks lokal di sekitar gap.
+        _, mel_norm = self.audio_to_mel_batch(x)   # (B, n_mels, T)
+        mel_norm_t = mel_norm.permute(0, 2, 1)      # (B, T, n_mels)
+        return self.feature_pool(mel_norm_t)         # (B, T, feature_dim)
 
     def _conditioning_image(self, masked_mel_norm, conditioning=None):
-        cond = masked_mel_norm.unsqueeze(1)
+        cond = masked_mel_norm.unsqueeze(1)  # (B, 1, mel, T)
         if conditioning is None:
             return cond
-        bias = self.condition_to_mel(conditioning.float()).unsqueeze(-1)
-        bias = torch.tanh(bias).expand(-1, -1, masked_mel_norm.shape[-1])
+        # FIX 5 lanjutan: conditioning sekarang bisa (B, feature_dim) global
+        # atau (B, T, feature_dim) per-frame. Keduanya ditangani di sini.
+        if conditioning.dim() == 2:
+            # global vector → broadcast ke semua frame
+            bias = self.condition_to_mel(conditioning.float())          # (B, n_mels)
+            bias = torch.tanh(bias).unsqueeze(-1).expand(-1, -1, masked_mel_norm.shape[-1])
+        else:
+            # per-frame (B, T, feature_dim) → per-frame bias
+            bias = self.condition_to_mel(conditioning.float())          # (B, T, n_mels)
+            bias = torch.tanh(bias).permute(0, 2, 1)                   # (B, n_mels, T)
         return torch.clamp(cond + 0.25 * bias.unsqueeze(1), min=-1.0, max=1.0)
 
     def _pad_frames_for_unet(self, mel_norm):
@@ -309,16 +322,22 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
                 gap_loss = F.l1_loss(eps_pred[expanded_mask], eps[expanded_mask])
             else:
                 gap_loss = full_loss
-        loss = gap_loss + 0.1 * full_loss
+        loss = 0.7 * gap_loss + 0.3 * full_loss  # FIX 4: dari (gap + 0.1*full) → (0.7*gap + 0.3*full) agar model tidak mengabaikan konsistensi keseluruhan audio
         return {"loss": loss, "gap_loss": gap_loss, "full_loss": full_loss}
 
     def predict_mel_norm(self, masked_audio, conditioning=None):
+        # FIX 2: ganti t=0 shortcut dengan proper DDPM sampling agar
+        # konsisten dengan cara inpaint() bekerja saat inference.
+        # t=0 sebelumnya menyebabkan training-inference mismatch.
         _, masked_mel_norm = self.audio_to_mel_batch(masked_audio)
         masked_mel_norm, frame_count = self._pad_frames_for_unet(masked_mel_norm)
         cond = self._conditioning_image(masked_mel_norm, conditioning=conditioning)
-        t = torch.zeros(cond.size(0), device=cond.device, dtype=torch.long)
-        eps_pred = self.decoder(cond, t, y=None, cond=cond)
-        pred = torch.clamp((cond - eps_pred).squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
+        n_steps = int(os.environ.get("MAID_M2P_INFERENCE_STEPS", 50))
+        n_steps = max(1, min(n_steps, self.n_timesteps))
+        x_t = torch.randn_like(cond)
+        with torch.no_grad():
+            samples = self.diffusion.sample(x_t, y=None, cond=cond, n_steps=n_steps, checkpoints=[n_steps])
+        pred = torch.clamp(samples[str(n_steps)].squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
         return pred.permute(0, 2, 1)
 
     def _mel_db_to_audio_tensor(self, mel_db_pred, target_len):
@@ -337,7 +356,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         griffinlim = torchaudio.transforms.GriffinLim(
             n_fft=self.n_fft,
             hop_length=self.hop_length,
-            n_iter=32,
+            n_iter=128,  # FIX 1: dinaikkan dari 32 → 128 untuk kualitas phase reconstruction lebih baik
             power=1.0,
         ).to(mel_power.device)
         linear_power = inverse_mel(mel_power).clamp_min(1e-10)
@@ -359,14 +378,58 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         _, masked_mel_norm, ref_db = self.audio_to_mel_batch(masked_audio, return_ref=True)
         masked_mel_padded, frame_count = self._pad_frames_for_unet(masked_mel_norm)
         cond = self._conditioning_image(masked_mel_padded, conditioning=conditioning)
-        x_t = torch.randn_like(cond)
+
+        # FIX 3: gap-preserving replacement method.
+        # Di setiap langkah DDPM sampling, paksa frame di luar gap kembali ke
+        # nilai noisy dari audio asli. Ini mencegah model "mengubah" bagian audio
+        # yang seharusnya tidak disentuh dan membuat boundary gap lebih natural.
+        frame_mask_padded = self.mask_to_frame_mask(mask, masked_mel_padded.shape[-1]).unsqueeze(1)  # (B,1,T)
+        known_mel = masked_mel_padded.unsqueeze(1)  # (B,1,mel,T)
+
         n_steps = int(os.environ.get("MAID_M2P_INFERENCE_STEPS", n_steps))
         n_steps = max(1, min(n_steps, self.n_timesteps))
-        samples = self.diffusion.sample(x_t, y=None, cond=cond, n_steps=n_steps, checkpoints=[n_steps])
-        pred_mel_norm = torch.clamp(samples[str(n_steps)].squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
 
-        frame_mask = self.mask_to_frame_mask(mask, pred_mel_norm.shape[-1]).unsqueeze(1)
-        output_mel_norm = torch.where(frame_mask, pred_mel_norm, masked_mel_norm)
+        # Hitung alpha_bar untuk setiap timestep (dibutuhkan untuk noisy known frames)
+        betas = self.diffusion.betas  # (T,)
+        alphas = 1.0 - betas
+        alpha_bar = torch.cumprod(alphas, dim=0).to(self.device)  # (T,)
+
+        x_t = torch.randn_like(cond)
+        step_size = self.n_timesteps // n_steps
+        timesteps = list(reversed(range(0, self.n_timesteps, step_size)))[:n_steps]
+
+        for i, t_val in enumerate(timesteps):
+            t_tensor = torch.full((x_t.shape[0],), t_val, device=self.device, dtype=torch.long)
+
+            # Satu langkah denoising dari backbone
+            with torch.no_grad():
+                eps_pred = self.decoder(x_t, t_tensor, y=None, cond=cond)
+            beta_t = betas[t_val]
+            alpha_t = alphas[t_val]
+            alpha_bar_t = alpha_bar[t_val]
+            x0_pred = (x_t - (1 - alpha_bar_t).sqrt() * eps_pred) / alpha_bar_t.sqrt()
+            x0_pred = torch.clamp(x0_pred, -1.0, 1.0)
+            if t_val > 0:
+                noise = torch.randn_like(x_t)
+                x_t = alpha_bar[t_val - step_size].sqrt() * x0_pred + (1 - alpha_bar[t_val - step_size]).sqrt() * noise
+            else:
+                x_t = x0_pred
+
+            # Replacement: paksa frame non-gap kembali ke nilai noisy dari known mel
+            if t_val > 0:
+                t_prev = max(t_val - step_size, 0)
+                ab_prev = alpha_bar[t_prev]
+                known_noisy = ab_prev.sqrt() * known_mel + (1 - ab_prev).sqrt() * torch.randn_like(known_mel)
+            else:
+                known_noisy = known_mel
+            x_t = torch.where(frame_mask_padded.unsqueeze(2).unsqueeze(2).expand_as(x_t), x_t, known_noisy)
+
+        pred_mel_norm = torch.clamp(x_t.squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
+        output_mel_norm = torch.where(
+            self.mask_to_frame_mask(mask, pred_mel_norm.shape[-1]).unsqueeze(1),
+            pred_mel_norm,
+            masked_mel_norm,
+        )
         output_mel_db = output_mel_norm * 40.0 - 40.0 + ref_db
         reconstructed = self._mel_db_to_audio_tensor(output_mel_db, masked_audio.shape[-1])
         output = torch.where(mask, reconstructed, masked_audio)
