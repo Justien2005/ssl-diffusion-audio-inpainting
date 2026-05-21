@@ -203,10 +203,12 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
     Dua mode inferensi:
     - Baseline (conditioning=None): multi-step reverse diffusion sampling
       menggunakan pipeline resmi CQT-Diff (T langkah Heun sampler)
-    - Hybrid (conditioning!=None): reconstruction via learned STFT head
+    - Hybrid (conditioning!=None): multi-step reverse diffusion sampling yang
+      denoiser-nya dikondisikan oleh representasi SSL
 
-    Training (hybrid path): get_features -> FiLM -> decode_features tetap
-    pakai STFT reconstruction head.
+    Training (hybrid path): get_features -> FiLM -> diffusion_loss. STFT head
+    hanya menjadi proyektor conditioning ke residual denoiser, bukan post-process
+    setelah diffusion selesai.
     """
 
     DIFFUSION_STEPS = int(os.environ.get("CQTDIFF_DIFFUSION_STEPS", "35"))
@@ -221,6 +223,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         self.target_len = int(segment_samples)
         self.gap_durations_ms = list(gap_durations_ms)
         self.cqt_diff_dir = os.path.abspath(cqt_diff_dir)
+        self.architecture_name = "ssl_conditioned_cqtdiff_v1"
 
         with _prepend_path(self.cqt_diff_dir):
             from src.models.unet_cqt import Unet_CQT
@@ -284,7 +287,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             torch.FloatTensor(lpf_coeffs).unsqueeze(0).unsqueeze(0),
         )
 
-        # ---- STFT reconstruction head (tetap dipakai buat hybrid training) ----
+        # ---- Conditioning head untuk hybrid diffusion ----
         self.n_fft = int(os.environ.get("CQTDIFF_ADAPTER_N_FFT", 2048))
         self.hop_length = int(os.environ.get("CQTDIFF_ADAPTER_HOP", 512))
         self.feature_dim = int(os.environ.get("CQTDIFF_ADAPTER_FEATURE_DIM", 256))
@@ -302,6 +305,13 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             nn.SiLU(),
             nn.Linear(512, self.freq_bins * 2),
         )
+        self.condition_gate = nn.Sequential(
+            nn.Linear(self.feature_dim, 128),
+            nn.SiLU(),
+            nn.Linear(128, 1),
+        )
+        nn.init.zeros_(self.condition_gate[-1].weight)
+        nn.init.constant_(self.condition_gate[-1].bias, -2.0)
 
     # ================================================================
     # Utility: resample + pad/crop
@@ -328,11 +338,89 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             x = torchaudio.functional.resample(x, self.native_sr, self.target_sr)
         return self._pad_or_crop(x, target_len)
 
+    def _target_mask_to_native_keep(self, user_mask):
+        """
+        Konversi mask target-sr ke domain native CQT-Diff.
+
+        Input user_mask memakai konvensi True=gap. Output memakai konvensi
+        CQT-Diff: 1=observed/keep, 0=gap.
+        """
+        gap = user_mask.float()
+        if self.target_sr != self.native_sr:
+            gap = torchaudio.functional.resample(gap, self.target_sr, self.native_sr)
+        gap = self._pad_or_crop(gap, self.native_len)
+        return (gap < 0.5).float()
+
+    def _conditioning_to_waveform(self, conditioning, target_len):
+        """
+        Decode representasi conditioning menjadi residual waveform.
+
+        Residual ini dipakai di dalam denoiser diffusion pada setiap step, bukan
+        sebagai refinement terpisah setelah hasil CQT-Diff keluar.
+        """
+        if conditioning is None:
+            return None
+        conditioning = conditioning.to(self.device_ref, dtype=torch.float32)
+        if conditioning.dim() == 2:
+            conditioning = conditioning.unsqueeze(1)
+
+        pred_spec_features = self.decode_features(conditioning).permute(0, 2, 1).contiguous()
+        device_type = self.device_ref.type
+        with torch.autocast(device_type=device_type, enabled=False):
+            bsz, _, n_frames = pred_spec_features.shape
+            pred_pairs = (
+                pred_spec_features.float()
+                .reshape(bsz, self.freq_bins, 2, n_frames)
+                .permute(0, 1, 3, 2)
+                .contiguous()
+            )
+            recon_spec = torch.view_as_complex(pred_pairs)
+            window = torch.hann_window(self.n_fft, device=pred_spec_features.device)
+            wave = torch.istft(
+                recon_spec,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                window=window,
+                length=target_len,
+            )
+
+        pooled = conditioning.mean(dim=1)
+        gate = torch.sigmoid(self.condition_gate(pooled)).clamp(0.0, 1.0)
+        return gate * wave
+
+    def _conditioned_model(self, conditioning, target_len):
+        """
+        Bungkus backbone official dengan residual conditioning SSL.
+
+        Signature mengikuti Unet_CQT(x, sigma) agar bisa dipakai langsung oleh
+        DiffusionParams.denoiser selama reverse diffusion.
+        """
+        cond_wave_target = self._conditioning_to_waveform(conditioning, target_len)
+        if cond_wave_target is None:
+            return self.backbone
+
+        cond_wave_native = self._to_native(cond_wave_target)
+
+        def model(x, sigma):
+            backbone_trainable = any(param.requires_grad for param in self.backbone.parameters())
+            if backbone_trainable:
+                base = self.backbone(x, sigma)
+            else:
+                self.backbone.eval()
+                with torch.no_grad():
+                    base = self.backbone(x, sigma)
+            residual = cond_wave_native.to(device=x.device, dtype=x.dtype)
+            if residual.shape[0] != x.shape[0]:
+                residual = residual.expand(x.shape[0], -1)
+            return base + residual
+
+        return model
+
     # ================================================================
     # Diffusion sampling loop (Heun 2nd-order, sesuai src/sampler.py)
     # ================================================================
 
-    def _run_diffusion_sampling(self, y, mask, T=None, show_progress=True):
+    def _run_diffusion_sampling(self, y, mask, T=None, show_progress=True, conditioning=None):
         """
         Multi-step reverse diffusion inpainting (2nd-order Heun sampler).
 
@@ -344,6 +432,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             T = self.DIFFUSION_STEPS
         device = y.device
         shape = y.shape
+        denoiser_model = self._conditioned_model(conditioning, target_len=self.target_len)
 
         t = self.diff_params.create_schedule(T).to(device)
         x = self.diff_params.sample_prior(shape, t[0]).to(device)
@@ -363,7 +452,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
 
                 # Denoise + data consistency (replacement method)
                 # mask=1 → observed (pakai y), mask=0 → gap (pakai prediksi denoiser)
-                denoised = self.diff_params.denoiser(x_hat, self.backbone, t_hat.unsqueeze(-1))
+                denoised = self.diff_params.denoiser(x_hat, denoiser_model, t_hat.unsqueeze(-1))
                 denoised = mask * y + (1.0 - mask) * denoised
 
                 score = (denoised - x_hat) / t_hat ** 2
@@ -374,7 +463,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
                     # 2nd order Heun correction
                     x_prime = x_hat + h * d
                     denoised_prime = self.diff_params.denoiser(
-                        x_prime, self.backbone, t[i + 1].unsqueeze(-1)
+                        x_prime, denoiser_model, t[i + 1].unsqueeze(-1)
                     )
                     denoised_prime = mask * y + (1.0 - mask) * denoised_prime
 
@@ -399,12 +488,13 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
     # Inpainting: baseline (diffusion) vs hybrid (reconstruction)
     # ================================================================
 
-    def _inpaint_diffusion(self, masked_audio, mask, T=None, show_progress=True):
+    def _inpaint_diffusion(self, masked_audio, mask, T=None, show_progress=True, conditioning=None):
         """
-        Baseline inpainting: multi-step reverse diffusion.
+        Inpainting via multi-step reverse diffusion.
 
         masked_audio : (B, target_len) audio di target_sr, zeros di gap
         mask         : (B, target_len) bool, True=gap
+        conditioning : optional SSL-conditioned features untuk hybrid diffusion
         """
         B = masked_audio.shape[0]
         target_len = masked_audio.shape[-1]
@@ -456,7 +546,13 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         y = cqtdiff_mask * audio_crop
 
         # Jalankan multi-step reverse diffusion
-        x_hat = self._run_diffusion_sampling(y, cqtdiff_mask, T=T, show_progress=show_progress)
+        x_hat = self._run_diffusion_sampling(
+            y,
+            cqtdiff_mask,
+            T=T,
+            show_progress=show_progress,
+            conditioning=conditioning,
+        )
         x_hat = self._apply_lowpass(x_hat)
 
         # Ambil konten gap dari hasil diffusion
@@ -484,18 +580,62 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         out = output.detach().cpu().numpy()
         return out[0] if B == 1 else out
 
+    def diffusion_loss(self, clean_audio, masked_audio, mask, conditioning=None):
+        """
+        Denoising objective untuk hybrid CQT-Diff.
+
+        Representasi SSL masuk ke denoiser diffusion melalui conditioning.
+        Loss dihitung pada gap region sehingga model belajar mengisi bagian
+        hilang dengan bantuan SSL, bukan merefine hasil sampling setelahnya.
+        """
+        clean_native = self._to_native(clean_audio).float()
+        masked_native = self._to_native(masked_audio).float()
+        keep_mask = self._target_mask_to_native_keep(mask).to(clean_native.device)
+        gap_mask = 1.0 - keep_mask
+
+        batch_size = clean_native.shape[0]
+        sigma = torch.exp(
+            torch.empty(batch_size, 1, device=clean_native.device).uniform_(
+                np.log(self.DIFFUSION_SIGMA_MIN),
+                np.log(self.DIFFUSION_SIGMA_MAX),
+            )
+        )
+        noise = torch.randn_like(clean_native) * sigma
+        x_noisy = keep_mask * masked_native + gap_mask * (clean_native + noise)
+
+        denoiser_model = self._conditioned_model(conditioning, target_len=clean_audio.shape[-1])
+        denoised = self.diff_params.denoiser(x_noisy, denoiser_model, sigma.squeeze(1))
+        denoised = keep_mask * masked_native + gap_mask * denoised
+
+        gap_bool = gap_mask.bool()
+        gap_loss = F.l1_loss(denoised[gap_bool], clean_native[gap_bool])
+        full_loss = F.l1_loss(denoised, clean_native)
+
+        denom = gap_mask.sum(dim=1).clamp_min(1.0)
+        pred_rms = torch.sqrt(((denoised * gap_mask).pow(2).sum(dim=1) / denom).clamp_min(1e-10))
+        target_rms = torch.sqrt(((clean_native * gap_mask).pow(2).sum(dim=1) / denom).clamp_min(1e-10))
+        energy_loss = F.l1_loss(torch.log(pred_rms + 1e-5), torch.log(target_rms + 1e-5))
+        loss = gap_loss + 0.1 * full_loss + 0.05 * energy_loss
+        return {
+            "loss": loss,
+            "gap_loss": gap_loss,
+            "full_loss": full_loss,
+            "energy_loss": energy_loss,
+        }
+
     def _inpaint_reconstruction(self, masked_audio, mask, conditioning,
                                 diffusion_audio=None):
+        return self._inpaint_diffusion(masked_audio, mask, conditioning=conditioning)
         """
-        Hybrid inpainting: two-stage (diffusion + FiLM refinement).
+        Legacy path disabled: hybrid CQT uses SSL-conditioned diffusion.
 
         Stage 1: Multi-step diffusion (sama dgn baseline) → initial recon
-                 Bisa di-skip kalau diffusion_audio sudah disediakan.
+                 Legacy branch is unreachable after the compatibility return.
         Stage 2: FiLM-conditioned spec_decoder → iSTFT → refined gap
-                 Blend 50/50 dengan diffusion output.
+                 Kept only to avoid breaking old references.
 
         conditioning: (B, T_frames, feature_dim) — sudah di-FiLM-kan di luar
-        diffusion_audio: (B, T) tensor — opsional, skip stage 1 kalau ada
+        diffusion_audio: legacy arg, ignored by active path
         """
         # Stage 1: Diffusion inpainting
         if diffusion_audio is not None:
@@ -547,8 +687,8 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         Entry point inpainting.
 
         conditioning=None  -> baseline: multi-step reverse diffusion
-        conditioning!=None -> hybrid: diffusion + FiLM refinement (two-stage)
-        diffusion_audio    -> opsional, skip stage 1 diffusion kalau sudah ada
+        conditioning!=None -> hybrid: SSL-conditioned reverse diffusion
+        diffusion_audio    -> legacy arg, diabaikan
         """
         if masked_audio.dim() == 1:
             masked_audio = masked_audio.unsqueeze(0)
@@ -557,11 +697,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         masked_audio = masked_audio.to(self.device_ref, dtype=torch.float32)
         mask = mask.to(self.device_ref)
 
-        if conditioning is not None:
-            return self._inpaint_reconstruction(
-                masked_audio, mask, conditioning, diffusion_audio=diffusion_audio
-            )
-        return self._inpaint_diffusion(masked_audio, mask)
+        return self._inpaint_diffusion(masked_audio, mask, conditioning=conditioning)
 
     # ================================================================
     # Feature extraction (tetap buat hybrid FiLM training)

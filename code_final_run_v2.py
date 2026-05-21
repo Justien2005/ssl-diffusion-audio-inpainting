@@ -2492,10 +2492,10 @@ print(f"   CPU thread env limit: {CPU_THREAD_LIMIT}")
 # langsung pakai output model sebagai audio. Ini menyebabkan **mismatch fatal**:
 # model dilatih memprediksi noise, tapi output-nya dipakai sebagai rekonstruksi.
 # 
-# Versi baru ini memakai **reconstruction loss di STFT domain**:
-# - Training: prediksi complex STFT clean audio (real+imag), loss pada gap frames
-# - Inference: prediksi complex STFT → iSTFT → replace gap region
-# - Training dan inference **fully aligned**
+# Versi baru ini membedakan objective per decoder:
+# - CQT-Diff hybrid: SSL latent menjadi conditioning denoiser diffusion
+# - Fallback/STFT decoder: prediksi complex STFT clean audio pada gap frames
+# - Training dan inference dijaga selaras per decoder
 # 
 # Fitur:
 # - Gap-only reconstruction loss (L1 pada complex STFT real+imag di gap region)
@@ -2506,16 +2506,16 @@ print(f"   CPU thread env limit: {CPU_THREAD_LIMIT}")
 
 
 # ============================================================
-# CELL 6.6: TRAINING LOOP (RECONSTRUCTION-BASED)
+# CELL 6.6: TRAINING LOOP (CONDITIONED DIFFUSION / RECONSTRUCTION)
 # ============================================================
 # Training untuk pipeline hybrid SSL + Decoder.
 #
 # PERBAIKAN UTAMA dari versi sebelumnya:
-# - Training loop tetap memakai objective rekonstruksi yang diharapkan
-#   disediakan oleh adapter decoder asli.
-# - Training dan inference sekarang ALIGNED:
-#   training prediksi complex STFT clean, inference juga
-# - Loss dihitung pada gap region only (spectral domain)
+# - CQT-Diff hybrid memakai diffusion_loss sehingga SSL conditioning dipelajari
+#   di dalam denoiser/sampler diffusion.
+# - Decoder fallback tetap memakai rekonstruksi STFT yang selaras dengan
+#   inference masing-masing.
+# - Loss dihitung pada gap region.
 # - CFG dropout tetap dipertahankan
 # ============================================================
 
@@ -2553,53 +2553,6 @@ def compute_frame_mask(sample_mask, n_frames, hop_length=512):
 
 CQT_WAVEFORM_GAP_LOSS_WEIGHT = float(os.environ.get("CQT_WAVEFORM_GAP_LOSS_WEIGHT", "0.1"))
 CQT_ENERGY_LOSS_WEIGHT = float(os.environ.get("CQT_ENERGY_LOSS_WEIGHT", "0.05"))
-CQTDIFF_REFINEMENT_SOURCE = os.environ.get("CQTDIFF_REFINEMENT_SOURCE", "diffusion").strip().lower()
-CQTDIFF_TRAIN_DIFFUSION_STEPS = int(os.environ.get(
-    "CQTDIFF_TRAIN_DIFFUSION_STEPS",
-    os.environ.get("CQTDIFF_DIFFUSION_STEPS", "35"),
-))
-if CQTDIFF_REFINEMENT_SOURCE not in {"diffusion", "masked", "clean"}:
-    raise ValueError("CQTDIFF_REFINEMENT_SOURCE harus salah satu dari: diffusion, masked, clean")
-
-
-def build_cqtdiff_refinement_input(decoder, clean, masked, mask):
-    """
-    Input fitur untuk CQT-Diff refinement head.
-
-    Default memakai diffusion reconstruction agar training/validation selaras
-    dengan inference two-stage: masked -> diffusion reconstruction -> FiLM refine.
-    Mode clean hanya untuk ablation/debug karena bocor target gap.
-    """
-    if not hasattr(decoder, "_inpaint_diffusion"):
-        return masked
-
-    source = CQTDIFF_REFINEMENT_SOURCE
-    if source == "clean":
-        return clean
-    if source == "masked":
-        return masked
-
-    was_training = decoder.training
-    recon = []
-    with torch.no_grad():
-        for sample, sample_mask in zip(masked, mask):
-            result = decoder._inpaint_diffusion(
-                sample.unsqueeze(0),
-                sample_mask.unsqueeze(0),
-                T=CQTDIFF_TRAIN_DIFFUSION_STEPS,
-                show_progress=False,
-            )
-            if isinstance(result, np.ndarray):
-                result = torch.from_numpy(result).float()
-            if result.dim() == 1:
-                result = result.unsqueeze(0)
-            recon.append(result.squeeze(0).to(device=masked.device, dtype=masked.dtype))
-
-    if was_training:
-        decoder.train()
-    else:
-        decoder.eval()
-    return torch.stack(recon, dim=0)
 
 
 def spec_features_to_waveform(pred_spec, audio_length, n_fft=2048, hop_length=512):
@@ -2714,7 +2667,7 @@ def print_epoch_profile(model_name, epoch, summary):
 
 def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scaler,
                               cfg_drop=0.1, device="cuda", profile_step=False):
-    """Satu step training dengan reconstruction loss di STFT domain."""
+    """Satu step training hybrid: CQT uses conditioned diffusion loss, fallback uses STFT loss."""
     decoder.train()
     film.train()
     profile = {}
@@ -2737,7 +2690,6 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     t_pre = time.perf_counter()
     with torch.no_grad():
         z = cached_z if cached_z is not None else encoder_fn(masked)
-        refinement_input = build_cqtdiff_refinement_input(decoder, clean, masked, mask)
     _sync_if_profile(profile_step)
     if profile_step:
         profile["preprocess_seconds"] = time.perf_counter() - t_pre
@@ -2748,26 +2700,40 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     _sync_if_profile(profile_step)
     t_gpu = time.perf_counter()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler.is_enabled()):
-        # Fitur refinement harus berasal dari diffusion reconstruction, sama seperti inference.
-        features = decoder.get_features(refinement_input, mask)
+        # SSL conditioning dipakai oleh diffusion denoiser untuk belajar,
+        # bukan sebagai post-processing/refinement setelah hasil CQT-Diff keluar.
+        features = decoder.get_features(masked, mask)
         cond_features = film(z.float(), features)
-        pred_spec = decoder.decode_features(cond_features)
-        target_spec = compute_stft_target(clean).permute(0, 2, 1)
+        if hasattr(decoder, "diffusion_loss"):
+            loss_parts = decoder.diffusion_loss(
+                clean,
+                masked,
+                mask=mask,
+                conditioning=cond_features,
+            )
+            loss = loss_parts["loss"]
+            gap_loss = loss_parts.get("gap_loss", loss)
+            full_loss = loss_parts.get("full_loss", loss)
+            waveform_gap_loss = loss_parts.get("waveform_gap_loss", torch.zeros_like(loss))
+            energy_loss = loss_parts.get("energy_loss", torch.zeros_like(loss))
+        else:
+            pred_spec = decoder.decode_features(cond_features)
+            target_spec = compute_stft_target(clean).permute(0, 2, 1)
 
-        T_min = min(pred_spec.shape[1], target_spec.shape[1])
-        pred_spec = pred_spec[:, :T_min, :]
-        target_spec = target_spec[:, :T_min, :]
+            T_min = min(pred_spec.shape[1], target_spec.shape[1])
+            pred_spec = pred_spec[:, :T_min, :]
+            target_spec = target_spec[:, :T_min, :]
 
-        frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
-        gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
-        full_loss = F.l1_loss(pred_spec, target_spec)
-        _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
-        loss = (
-            gap_loss
-            + 0.1 * full_loss
-            + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
-            + CQT_ENERGY_LOSS_WEIGHT * energy_loss
-        )
+            frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
+            gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+            full_loss = F.l1_loss(pred_spec, target_spec)
+            _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
+            loss = (
+                gap_loss
+                + 0.1 * full_loss
+                + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
+                + CQT_ENERGY_LOSS_WEIGHT * energy_loss
+            )
 
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
@@ -2879,6 +2845,7 @@ def save_training_checkpoint(decoder, optimizer, epoch, metric, checkpoint_dir, 
         "history": history or [],
         "saved_at": pd.Timestamp.now().isoformat(),
         "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
+        "architecture": getattr(decoder, "architecture_name", decoder.__class__.__name__),
     }
     if film is not None:
         payload["film_state"] = film.state_dict()
@@ -2902,6 +2869,15 @@ def load_training_checkpoint_if_available(decoder, optimizer, scheduler, scaler,
         return 0, float("inf"), []
 
     payload = torch.load(latest_path, map_location=device, weights_only=False)
+    expected_arch = getattr(decoder, "architecture_name", None)
+    checkpoint_arch = payload.get("architecture")
+    if expected_arch is not None and checkpoint_arch != expected_arch:
+        print(
+            f"Checkpoint {latest_path} memakai arsitektur lama "
+            f"({checkpoint_arch or 'unknown'}), training {model_name} dimulai ulang "
+            f"dengan {expected_arch}."
+        )
+        return 0, float("inf"), []
     decoder.load_state_dict(payload["decoder_state"])
     if film is not None and payload.get("film_state") is not None:
         film.load_state_dict(payload["film_state"])
@@ -3193,26 +3169,34 @@ def validate_model(decoder, encoder_fn, film, val_loader, device):
             mask = batch["mask"].to(device, non_blocking=True)
             cached_z = batch.get("encoder_latent")
             z = cached_z.to(device, non_blocking=True) if cached_z is not None else encoder_fn(masked)
-            refinement_input = build_cqtdiff_refinement_input(decoder, clean, masked, mask)
-            features = decoder.get_features(refinement_input, mask)
+            features = decoder.get_features(masked, mask)
             cond_features = film(z.float(), features)
-            pred_spec = decoder.decode_features(cond_features)
+            if hasattr(decoder, "diffusion_loss"):
+                loss_parts = decoder.diffusion_loss(
+                    clean,
+                    masked,
+                    mask=mask,
+                    conditioning=cond_features,
+                )
+                val_loss = loss_parts["loss"]
+            else:
+                pred_spec = decoder.decode_features(cond_features)
 
-            target_spec = compute_stft_target(clean).permute(0, 2, 1)
-            T_min = min(pred_spec.shape[1], target_spec.shape[1])
-            pred_spec = pred_spec[:, :T_min, :]
-            target_spec = target_spec[:, :T_min, :]
+                target_spec = compute_stft_target(clean).permute(0, 2, 1)
+                T_min = min(pred_spec.shape[1], target_spec.shape[1])
+                pred_spec = pred_spec[:, :T_min, :]
+                target_spec = target_spec[:, :T_min, :]
 
-            frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
-            gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
-            full_loss = F.l1_loss(pred_spec, target_spec)
-            _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
-            val_loss = (
-                gap_loss
-                + 0.1 * full_loss
-                + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
-                + CQT_ENERGY_LOSS_WEIGHT * energy_loss
-            )
+                frame_mask = compute_frame_mask(mask, T_min).unsqueeze(-1).expand_as(pred_spec)
+                gap_loss = F.l1_loss(pred_spec[frame_mask], target_spec[frame_mask])
+                full_loss = F.l1_loss(pred_spec, target_spec)
+                _, waveform_gap_loss, energy_loss = compute_waveform_gap_losses(pred_spec, clean, mask)
+                val_loss = (
+                    gap_loss
+                    + 0.1 * full_loss
+                    + CQT_WAVEFORM_GAP_LOSS_WEIGHT * waveform_gap_loss
+                    + CQT_ENERGY_LOSS_WEIGHT * energy_loss
+                )
             val_losses.append(val_loss.item())
 
     return float(np.mean(val_losses))
@@ -3266,7 +3250,7 @@ def save_checkpoint(decoder, film, optimizer, epoch, val_loss, checkpoint_dir, m
     print(f"  💾 Best checkpoint saved: {ckpt_path}")
 
 
-print("✅ Training loop (reconstruction-based) berhasil didefinisikan!")
+print("✅ Training loop (conditioned diffusion / reconstruction) berhasil didefinisikan!")
 print("   Komponen: train_step_reconstruction, train_step_baseline,")
 print("             train_model, train_baseline_model, validate_model")
 
@@ -3283,7 +3267,7 @@ print("             train_model, train_baseline_model, validate_model")
 #
 # PERBAIKAN UTAMA:
 # - proxy/replika decoder dinonaktifkan untuk final pipeline
-# - Training & inference aligned (keduanya reconstruction-based)
+# - Training & inference aligned sesuai objective decoder
 # - Mask-aware: model tahu lokasi dan ukuran gap
 # ============================================================
 
@@ -3340,7 +3324,18 @@ def load_hybrid_checkpoint(model_name: str, decoder: nn.Module, film_layer: nn.M
         )
 
     payload = torch.load(ckpt_path, map_location=device, weights_only=False)
-    decoder.load_state_dict(payload["decoder_state"])
+    expected_arch = getattr(decoder, "architecture_name", None)
+    checkpoint_arch = payload.get("architecture")
+    if expected_arch is not None and checkpoint_arch != expected_arch:
+        raise RuntimeError(
+            f"Checkpoint {ckpt_path} memakai arsitektur lama "
+            f"({checkpoint_arch or 'unknown'}), sedangkan model sekarang {expected_arch}. "
+            "Retrain model ini agar SSL menjadi conditioning diffusion, bukan refinement lama."
+        )
+    if expected_arch is not None and checkpoint_arch is None:
+        decoder.load_state_dict(payload["decoder_state"], strict=False)
+    else:
+        decoder.load_state_dict(payload["decoder_state"])
     film_layer.load_state_dict(payload["film_state"])
     print(f"✅ Checkpoint diload: {ckpt_path}")
     return payload
@@ -3353,7 +3348,17 @@ def load_baseline_checkpoint(decoder: nn.Module, device):
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Baseline checkpoint belum ada: {ckpt_path}")
     payload = torch.load(ckpt_path, map_location=device, weights_only=False)
-    decoder.load_state_dict(payload["decoder_state"])
+    expected_arch = getattr(decoder, "architecture_name", None)
+    checkpoint_arch = payload.get("architecture")
+    if expected_arch is not None and checkpoint_arch not in {None, expected_arch}:
+        raise RuntimeError(
+            f"Baseline checkpoint {ckpt_path} memakai arsitektur {checkpoint_arch}, "
+            f"sedangkan model sekarang {expected_arch}."
+        )
+    if expected_arch is not None and checkpoint_arch is None:
+        decoder.load_state_dict(payload["decoder_state"], strict=False)
+    else:
+        decoder.load_state_dict(payload["decoder_state"])
     print(f"✅ Baseline checkpoint diload: {ckpt_path}")
     return payload
 
@@ -4013,25 +4018,16 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                     has_mask_param = 'mask' in sig.parameters
 
                     if has_diffusion:
-                        # CQT-Diff+: two-stage (diffusion → FiLM refinement)
-                        diffusion_result = decoder._inpaint_diffusion(masked_tensor, mask_tensor)
-                        if isinstance(diffusion_result, np.ndarray):
-                            diffusion_tensor = torch.from_numpy(diffusion_result).float()
-                            if diffusion_tensor.dim() == 1:
-                                diffusion_tensor = diffusion_tensor.unsqueeze(0)
-                            diffusion_tensor = diffusion_tensor.to(device)
-                        else:
-                            diffusion_tensor = diffusion_result
-
-                        # Extract features dari diffusion output (bukan masked!)
-                        decoder_features = decoder.get_features(diffusion_tensor, mask_tensor)
+                        # CQT-Diff+: SSL representations condition the diffusion
+                        # sampler directly. Tidak ada post-processing/refinement
+                        # setelah baseline diffusion selesai.
+                        decoder_features = decoder.get_features(masked_tensor, mask_tensor)
                         conditioned_features = film_layer(encoder_latent.float(), decoder_features)
 
                         reconstructed = decoder.inpaint(
                             masked_tensor,
                             mask_tensor,
                             conditioning=conditioned_features,
-                            diffusion_audio=diffusion_tensor,
                         )
                     else:
                         # MAID: single-pass (no diffusion stage)

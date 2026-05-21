@@ -18,7 +18,7 @@ source env_instance.sh
 echo "============================================"
 echo " TEST RUN: Pipeline Validation"
 echo "============================================"
-echo "Tujuan: Validasi bahwa baseline diffusion + hybrid two-stage bekerja."
+echo "Tujuan: Validasi bahwa baseline diffusion + hybrid SSL-conditioned diffusion bekerja."
 echo ""
 
 # Override config buat test run cepat
