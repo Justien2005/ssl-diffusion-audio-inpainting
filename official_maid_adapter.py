@@ -108,7 +108,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         )
 
         self.feature_pool = nn.Sequential(
-            nn.Linear(self.n_mels, self.feature_dim),
+            nn.Linear(self.n_mels + 1, self.feature_dim),
             nn.SiLU(),
             nn.Linear(self.feature_dim, self.feature_dim),
             nn.SiLU(),
@@ -266,15 +266,22 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
             pooled = pooled[:, :frame_count]
         return pooled.bool()
 
-    def get_features(self, x):
-        # FIX 5: ganti global mean pooling → per-frame features (B, T, feature_dim).
-        # Sebelumnya mel_norm.mean(dim=-1) menghilangkan seluruh info temporal,
-        # sehingga FiLM memberi conditioning yang sama untuk semua frame.
-        # Sekarang setiap frame punya representasinya sendiri agar model tahu
-        # posisi dan konteks lokal di sekitar gap.
+    def get_features(self, x, mask=None):
         _, mel_norm = self.audio_to_mel_batch(x)   # (B, n_mels, T)
         mel_norm_t = mel_norm.permute(0, 2, 1)      # (B, T, n_mels)
-        return self.feature_pool(mel_norm_t)         # (B, T, feature_dim)
+        T_frames = mel_norm_t.shape[1]
+
+        if mask is not None:
+            frame_mask = self.mask_to_frame_mask(mask, T_frames)  # (B, T) bool
+            mask_indicator = frame_mask.float().unsqueeze(-1)     # (B, T, 1)
+        else:
+            mask_indicator = torch.zeros(
+                mel_norm_t.shape[0], T_frames, 1,
+                device=mel_norm_t.device, dtype=mel_norm_t.dtype,
+            )
+
+        features_in = torch.cat([mel_norm_t, mask_indicator], dim=-1)  # (B, T, n_mels+1)
+        return self.feature_pool(features_in)  # (B, T, feature_dim)
 
     def _conditioning_image(self, masked_mel_norm, conditioning=None):
         cond = masked_mel_norm.unsqueeze(1)  # (B, 1, mel, T)
@@ -300,7 +307,8 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
             mel_norm = F.pad(mel_norm, (0, pad_frames), value=-1.0)
         return mel_norm, frame_count
 
-    def diffusion_loss(self, clean_audio, masked_audio, mask=None, conditioning=None):
+    def diffusion_loss(self, clean_audio, masked_audio, mask=None, conditioning=None,
+                       deterministic_sigma=False):
         _, clean_mel_norm = self.audio_to_mel_batch(clean_audio)
         _, masked_mel_norm = self.audio_to_mel_batch(masked_audio)
         clean_mel_norm, _ = self._pad_frames_for_unet(clean_mel_norm)
@@ -308,7 +316,10 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
         target = clean_mel_norm.unsqueeze(1)
         cond = self._conditioning_image(masked_mel_norm, conditioning=conditioning)
 
-        t = torch.randint(0, self.n_timesteps, size=(target.size(0),), device=target.device)
+        if deterministic_sigma:
+            t = torch.full((target.size(0),), self.n_timesteps // 2, device=target.device, dtype=torch.long)
+        else:
+            t = torch.randint(0, self.n_timesteps, size=(target.size(0),), device=target.device)
         eps = torch.randn_like(target)
         eps_pred = self.diffusion(target, eps, t, y=None, cond=cond)
 
@@ -422,7 +433,7 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
                 known_noisy = ab_prev.sqrt() * known_mel + (1 - ab_prev).sqrt() * torch.randn_like(known_mel)
             else:
                 known_noisy = known_mel
-            x_t = torch.where(frame_mask_padded.unsqueeze(2).unsqueeze(2).expand_as(x_t), x_t, known_noisy)
+            x_t = torch.where(frame_mask_padded.unsqueeze(2).expand_as(x_t), x_t, known_noisy)
 
         pred_mel_norm = torch.clamp(x_t.squeeze(1), min=-1.0, max=1.0)[..., :frame_count]
         output_mel_norm = torch.where(

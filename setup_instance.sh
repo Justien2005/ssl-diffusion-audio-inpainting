@@ -265,6 +265,9 @@ export GSTPEAQ_PLUGIN="$GSTPEAQ_DIR/src/.libs/libgstpeaq.so"
 export OFFICIAL_CQTDIFF_ADAPTER=official_cqtdiff_adapter
 export MAID_ADAPTER=official_maid_adapter
 
+# MAID: train from scratch (no pretrained DDPM-Midi2Performance checkpoint required)
+export ALLOW_RANDOM_MAID=1
+
 # CQT-Diff+ diffusion sampling config
 export CQTDIFF_DIFFUSION_STEPS="${CQTDIFF_DIFFUSION_STEPS:-35}"
 export CQTDIFF_DIFFUSION_XI="${CQTDIFF_DIFFUSION_XI:-0}"

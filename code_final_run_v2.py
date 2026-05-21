@@ -3787,7 +3787,7 @@ def train_maid_step(decoder, encoder_fn, film, batch, optimizer, scaler, cfg_dro
     _sync_if_profile(profile_step)
     t_gpu = time.perf_counter()
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-        decoder_features = decoder.get_features(masked)
+        decoder_features = decoder.get_features(masked, mask)
         conditioned_features = film(z.float(), decoder_features)
         if hasattr(decoder, "diffusion_loss"):
             loss_parts = decoder.diffusion_loss(
@@ -4035,11 +4035,8 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                             conditioning=conditioned_features,
                         )
                     else:
-                        # MAID: single-pass (no diffusion stage)
-                        if has_mask_param:
-                            decoder_features = decoder.get_features(masked_tensor, mask_tensor)
-                        else:
-                            decoder_features = decoder.get_features(masked_tensor)
+                        # MAID: diffusion handled internally by decoder.inpaint()
+                        decoder_features = decoder.get_features(masked_tensor, mask_tensor)
                         conditioned_features = film_layer(encoder_latent.float(), decoder_features)
 
                         reconstructed = decoder.inpaint(
