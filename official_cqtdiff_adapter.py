@@ -92,8 +92,14 @@ class DiffusionParams:
 
     def denoiser(self, x, model, sigma):
         """Full denoiser step: preconditioning + model forward."""
-        sigma = sigma.unsqueeze(-1)
-        return self.cskip(sigma) * x + self.cout(sigma) * model(self.cin(sigma) * x, self.cnoise(sigma))
+        device_type = x.device.type
+        with torch.autocast(device_type=device_type, enabled=False):
+            x = x.float()
+            sigma = sigma.to(device=x.device, dtype=torch.float32).unsqueeze(-1)
+            return self.cskip(sigma) * x + self.cout(sigma) * model(
+                self.cin(sigma) * x,
+                self.cnoise(sigma),
+            )
 
 
 # ============================================================
