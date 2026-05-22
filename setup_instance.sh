@@ -306,7 +306,7 @@ sys.path.insert(0, os.environ["CQT_DIFF_DIR"])
 from official_cqtdiff_adapter import build_cqtdiff_decoder
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 decoder = build_cqtdiff_decoder(
-    device=device, target_sr=44100, segment_samples=176400,
+    device=device, target_sr=22050, segment_samples=65536,
     gap_durations_ms=[500], cqt_diff_dir=os.environ["CQT_DIFF_DIR"],
 )
 decoder.eval()
@@ -317,17 +317,20 @@ print(f"  Backbone params: {sum(p.numel() for p in decoder.backbone.parameters()
 
 # Quick inpaint test (synthetic)
 import numpy as np
-audio = np.random.randn(176400).astype(np.float32) * 0.1
-mask = np.zeros(176400, dtype=bool)
-mask[77000:99000] = True
-audio[77000:99000] = 0.0
+audio = np.random.randn(65536).astype(np.float32) * 0.1
+mask = np.zeros(65536, dtype=bool)
+gap_samples = int(round(22050 * 500 / 1000))
+gap_start = len(audio) // 2 - gap_samples // 2
+gap_end = gap_start + gap_samples
+mask[gap_start:gap_end] = True
+audio[gap_start:gap_end] = 0.0
 
 with torch.inference_mode():
     mt = torch.from_numpy(audio).float().unsqueeze(0).to(device)
     mk = torch.from_numpy(mask).unsqueeze(0).to(device)
     os.environ["CQTDIFF_DIFFUSION_STEPS"] = "3"
     recon = decoder.inpaint(mt, mk, conditioning=None)
-    rms = np.sqrt(np.mean(recon[77000:99000] ** 2))
+    rms = np.sqrt(np.mean(recon[gap_start:gap_end] ** 2))
     print(f"  Smoke inpaint (3 steps): gap RMS = {rms:.6f} {'OK' if rms > 0.001 else 'FAIL'}")
 PY
 

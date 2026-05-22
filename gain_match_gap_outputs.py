@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_STAGE_NAME = "code_v3_final_run_real"
+DEFAULT_STAGE_NAME = "code_v3_final_run_native_cqt"
 DEFAULT_MODEL_NAME = "baseline_cqtdiff"
-DEFAULT_SR = 44100
+DEFAULT_SR = 22050
 
 
 def make_gap_bounds(audio_length, gap_ms, sr=DEFAULT_SR):

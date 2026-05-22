@@ -197,7 +197,7 @@ print("   Proxy/replika dinonaktifkan; pipeline akan berhenti jika model asli be
 import os
 
 # --- PARAMETER -----------------------------------------------
-PIPELINE_STAGE_NAME = "code_v3_final_run_real"  # Stage override: isolasi output/checkpoint untuk notebook ini.
+PIPELINE_STAGE_NAME = "code_v3_final_run_native_cqt"  # Native CQT-Diff setup: 22.05 kHz, 65536 samples.
 IS_LOCAL = True   # Vast.ai/local default. Ganti ke False hanya jika menggunakan Google Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 BASE_LOCAL_ROOT = os.environ.get("MUSIC_INPAINTING_ROOT", os.path.join(PROJECT_ROOT, "music_inpainting"))
@@ -261,8 +261,6 @@ def validate_official_model_configuration():
         for label, module_name in required_adapters.items()
         if importlib.util.find_spec(module_name) is None
     ]
-    if not os.path.exists(os.path.join(MIDI2PERFORMANCE_DIR, "main", "models", "diffusion", "unet_openai.py")):
-        missing.append(f"MAID original DDPM-Midi2Performance: repo '{MIDI2PERFORMANCE_DIR}'")
     if missing:
         raise RuntimeError(
             "Final pipeline disetel official-only, tetapi adapter model asli belum tersedia:\n"
@@ -462,12 +460,20 @@ SKIP_IF_EXISTS = True
 # Seed tetap untuk semua sampling dataset agar eksperimen reproducible
 DATASET_RANDOM_SEED = 42
 
-# Sample rate target: MusicNet native/CD quality, cocok untuk ViSQOL (44.1/48kHz)
-TARGET_SR = 44100
-
-# Panjang segmen audio (4 detik = cukup untuk gap 1700ms + konteks)
-SEGMENT_DURATION = 4.0
-SEGMENT_SAMPLES = int(TARGET_SR * SEGMENT_DURATION)  # 176400 samples
+# Native CQT-Diff configuration.
+# The official CQT-Diff checkpoint is configured for 22.05 kHz and 65536 samples.
+# Keeping the full pipeline at this native shape avoids the previous
+# 44.1 kHz/4 s -> center-crop path, which made the effective context
+# different from the experimental claim.
+CQT_NATIVE_SR = 22050
+CQT_NATIVE_SAMPLES = 65536
+TARGET_SR = CQT_NATIVE_SR
+SEGMENT_SAMPLES = CQT_NATIVE_SAMPLES
+SEGMENT_DURATION = SEGMENT_SAMPLES / TARGET_SR
+EXPERIMENT_CONFIG_ID = (
+    f"native_cqtdiff_sr{TARGET_SR}_n{SEGMENT_SAMPLES}_"
+    f"dur{SEGMENT_DURATION:.6f}s"
+)
 
 # Gap duration yang dievaluasi (dalam milidetik) — DIPERBARUI
 GAP_DURATIONS_MS = [100, 300, 500, 750, 1200, 1700]
@@ -481,12 +487,43 @@ N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "10"))
 # lalu generate ulang semua output untuk checkpoint/model yang sedang diload.
 EVAL_REUSE_RECONSTRUCTIONS = os.environ.get("EVAL_REUSE_RECONSTRUCTIONS", "0").lower() in {"1", "true", "yes", "on"}
 EVAL_CLEAR_RECONSTRUCTIONS = os.environ.get("EVAL_CLEAR_RECONSTRUCTIONS", "1").lower() in {"1", "true", "yes", "on"}
+EVAL_GAP_POSITION = os.environ.get("EVAL_GAP_POSITION", "center").strip().lower()
+if EVAL_GAP_POSITION not in {"center", "random"}:
+    raise ValueError("EVAL_GAP_POSITION harus 'center' atau 'random'.")
+EVAL_RANDOM_GAP_MIN_CONTEXT_MS = int(os.environ.get("EVAL_RANDOM_GAP_MIN_CONTEXT_MS", "250"))
+EVAL_GAP_WINDOW_PERCEPTUAL = os.environ.get("EVAL_GAP_WINDOW_PERCEPTUAL", "0").lower() in {"1", "true", "yes", "on"}
+EVAL_GAP_WINDOW_PAD_MS = int(os.environ.get("EVAL_GAP_WINDOW_PAD_MS", "250"))
 
 # Jumlah segmen maksimal per lagu
 MAX_SEGMENTS_PER_FILE = 5
 
 # Metadata MusicNet dipakai untuk stratified sampling composer + instrument
 MUSICNET_METADATA_URL = "https://zenodo.org/record/5120004/files/musicnet_metadata.csv"
+
+
+def gap_context_seconds(gap_ms, segment_samples=SEGMENT_SAMPLES, sr=TARGET_SR):
+    """Return left/right context for center-gap evaluation in seconds."""
+    gap_samples = int(round(sr * gap_ms / 1000))
+    context_samples = max(0, segment_samples - gap_samples)
+    return (context_samples / 2) / sr
+
+
+def log_native_experiment_setup():
+    print("\n" + "=" * 70)
+    print("NATIVE CQT-DIFF EXPERIMENT SETUP")
+    print("=" * 70)
+    print(f"Config id        : {EXPERIMENT_CONFIG_ID}")
+    print(f"Target SR        : {TARGET_SR} Hz")
+    print(f"Segment samples  : {SEGMENT_SAMPLES}")
+    print(f"Segment duration : {SEGMENT_DURATION:.3f} s")
+    print(f"Eval gap position: {EVAL_GAP_POSITION}")
+    print("Effective center-gap context per side:")
+    for gap_ms in GAP_DURATIONS_MS:
+        print(f"  - {gap_ms:4d} ms gap -> {gap_context_seconds(gap_ms):.3f} s left/right")
+    print("=" * 70 + "\n")
+
+
+log_native_experiment_setup()
 
 
 # ============================================================
@@ -690,7 +727,7 @@ def preprocess_audio(audio_path):
     Preprocessing standar untuk satu file audio:
     1. Load audio
     2. Konversi ke mono
-    3. Resample ke TARGET_SR (44.1 kHz)
+    3. Resample ke TARGET_SR (22.05 kHz, native CQT-Diff)
     4. Normalisasi RMS ke target level (-23 dBFS approx)
 
     Menggunakan RMS normalization alih-alih peak normalization
@@ -708,7 +745,7 @@ def preprocess_audio(audio_path):
 
 def split_into_segments(audio, file_seed=0):
     """
-    Potong audio panjang jadi segmen-segmen 4 detik.
+    Potong audio panjang jadi segmen native CQT-Diff (~2.97 detik).
     Ambil maksimal MAX_SEGMENTS_PER_FILE secara random
     agar dataset lebih beragam.
 
@@ -721,6 +758,32 @@ def split_into_segments(audio, file_seed=0):
     n_segments = min(MAX_SEGMENTS_PER_FILE, len(possible_starts))
     selected_starts = rng.sample(possible_starts, n_segments)
     return [audio[s : s + SEGMENT_SAMPLES] for s in selected_starts]
+
+
+def compute_gap_bounds(audio_length, gap_ms, sr=TARGET_SR, gap_start=None):
+    """Compute sample-exact gap bounds within one native segment."""
+    gap_samples = int(round(sr * gap_ms / 1000))
+    if gap_samples <= 0 or gap_samples >= audio_length:
+        raise ValueError(
+            f"Gap {gap_ms}ms tidak valid untuk audio_length={audio_length}, sr={sr}."
+        )
+    if gap_start is None:
+        center = audio_length // 2
+        gap_start = center - gap_samples // 2
+    gap_start = int(gap_start)
+    gap_end = gap_start + gap_samples
+    if gap_start < 0 or gap_end > audio_length:
+        raise ValueError(
+            f"Gap bounds keluar audio: start={gap_start}, end={gap_end}, length={audio_length}."
+        )
+    return gap_start, gap_end
+
+
+def build_gap_mask_array(audio_length, gap_ms, sr=TARGET_SR, gap_start=None):
+    gap_start, gap_end = compute_gap_bounds(audio_length, gap_ms, sr=sr, gap_start=gap_start)
+    mask = np.zeros(audio_length, dtype=bool)
+    mask[gap_start:gap_end] = True
+    return mask, gap_start, gap_end
 
 
 def apply_gap_mask(audio_segment, gap_ms, sr=TARGET_SR):
@@ -739,16 +802,10 @@ def apply_gap_mask(audio_segment, gap_ms, sr=TARGET_SR):
         gap_start    : indeks awal gap
         gap_end      : indeks akhir gap
     """
-    gap_samples = int(round(sr * gap_ms / 1000))
-    center = len(audio_segment) // 2
-    gap_start = center - gap_samples // 2
-    gap_end = gap_start + gap_samples
+    mask, gap_start, gap_end = build_gap_mask_array(len(audio_segment), gap_ms, sr=sr)
 
     masked_audio = audio_segment.copy()
     masked_audio[gap_start:gap_end] = 0.0
-
-    mask = np.zeros(len(audio_segment), dtype=bool)
-    mask[gap_start:gap_end] = True
 
     return masked_audio, mask, gap_start, gap_end
 
@@ -774,20 +831,55 @@ def write_preprocessing_timing(status, total_seconds, total_segments=0):
     print(f"Preprocessing timing saved: {timing_path}")
 
 
+def _current_preprocessing_config():
+    return {
+        "config_id": EXPERIMENT_CONFIG_ID,
+        "target_sr": int(TARGET_SR),
+        "segment_samples": int(SEGMENT_SAMPLES),
+        "segment_duration": float(SEGMENT_DURATION),
+        "gap_durations_ms": list(GAP_DURATIONS_MS),
+        "dataset_fraction": float(DATASET_FRACTION),
+        "max_segments_per_file": int(MAX_SEGMENTS_PER_FILE),
+        "seed": int(DATASET_RANDOM_SEED),
+    }
+
+
+def _preprocessing_config_matches(config_path, metadata_path):
+    """Return True only if cached preprocessing belongs to this native CQT setup."""
+    if not os.path.exists(config_path) or not os.path.exists(metadata_path):
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        expected = _current_preprocessing_config()
+        keys = ["config_id", "target_sr", "segment_samples", "gap_durations_ms", "seed"]
+        if any(cached.get(key) != expected.get(key) for key in keys):
+            return False
+        meta = pd.read_csv(metadata_path)
+        if meta.empty:
+            return False
+        if "sample_rate" in meta.columns and not (meta["sample_rate"].astype(int) == TARGET_SR).all():
+            return False
+        if "n_samples" in meta.columns and not (meta["n_samples"].astype(int) == SEGMENT_SAMPLES).all():
+            return False
+        return True
+    except Exception as exc:
+        print(f"⚠️ Cached preprocessing config tidak valid ({exc}); preprocessing akan dibuat ulang.")
+        return False
+
+
 preprocessing_start = time.perf_counter()
 
 preprocessed_flag = os.path.join(PATHS["preprocessed"], ".done")
 preprocessed_metadata = os.path.join(PATHS["preprocessed"], "metadata.csv")
+preprocessed_config = os.path.join(PATHS["preprocessed"], "preprocessing_config.json")
 expected_mask_dirs = [
     os.path.join(PATHS["masked"], f"gap_{gap_ms}ms")
     for gap_ms in GAP_DURATIONS_MS
 ]
 preprocessed_artifacts_ready = (
-    os.path.exists(preprocessed_flag)
-    or (
-        os.path.exists(preprocessed_metadata)
-        and all(os.path.isdir(path) for path in expected_mask_dirs)
-    )
+    _preprocessing_config_matches(preprocessed_config, preprocessed_metadata)
+    and all(os.path.isdir(path) for path in expected_mask_dirs)
 )
 
 if SKIP_IF_EXISTS and preprocessed_artifacts_ready:
@@ -798,6 +890,13 @@ if SKIP_IF_EXISTS and preprocessed_artifacts_ready:
             f.write("done")
     write_preprocessing_timing("skipped", time.perf_counter() - preprocessing_start, 0)
 else:
+    if os.path.exists(preprocessed_metadata) and not _preprocessing_config_matches(preprocessed_config, preprocessed_metadata):
+        print("♻️ Preprocessing lama tidak cocok dengan native CQT config; membersihkan artifact stage.")
+        for stale_dir in [PATHS["preprocessed"], PATHS["masked"]]:
+            if os.path.isdir(stale_dir):
+                shutil.rmtree(stale_dir)
+            os.makedirs(stale_dir, exist_ok=True)
+
     audio_dir = download_musicnet()
     metadata_df = download_musicnet_metadata()
 
@@ -870,6 +969,8 @@ else:
 
     with open(preprocessed_flag, 'w') as f:
         f.write("done")
+    with open(preprocessed_config, "w", encoding="utf-8") as f:
+        json.dump(_current_preprocessing_config(), f, indent=2)
 
     print(f"\n✅ Preprocessing selesai! Total segmen: {segment_id}")
     print(f"   Metadata: {meta_path}")
@@ -1034,6 +1135,80 @@ def compute_lsd(original: np.ndarray, reconstructed: np.ndarray,
 
     lsd = np.mean(np.sqrt(np.mean(log_diff ** 2, axis=0)))
     return float(lsd)
+
+
+def _metric_gap_bounds(audio_len, gap_ms, sr=TARGET_SR, region=None):
+    if region is not None:
+        return int(region["gap_start"]), int(region["gap_end"])
+    return compute_gap_bounds(audio_len, gap_ms, sr=sr)
+
+
+def _slice_metric_region(original, reconstructed, gap_start, gap_end):
+    n = min(len(original), len(reconstructed))
+    gap_start = max(0, min(int(gap_start), n))
+    gap_end = max(gap_start, min(int(gap_end), n))
+    ref = np.asarray(original[:n], dtype=np.float64)[gap_start:gap_end]
+    est = np.asarray(reconstructed[:n], dtype=np.float64)[gap_start:gap_end]
+    return ref, est
+
+
+def compute_gap_snr(original, reconstructed, gap_start, gap_end):
+    ref, est = _slice_metric_region(original, reconstructed, gap_start, gap_end)
+    if len(ref) == 0:
+        return np.nan
+    noise = ref - est
+    return float(10.0 * np.log10((np.sum(ref ** 2) + 1e-12) / (np.sum(noise ** 2) + 1e-12)))
+
+
+def compute_gap_si_sdr(original, reconstructed, gap_start, gap_end):
+    ref, est = _slice_metric_region(original, reconstructed, gap_start, gap_end)
+    if len(ref) == 0:
+        return np.nan
+    ref = ref - np.mean(ref)
+    est = est - np.mean(est)
+    ref_energy = np.sum(ref ** 2) + 1e-12
+    target = (np.sum(est * ref) / ref_energy) * ref
+    error = est - target
+    return float(10.0 * np.log10((np.sum(target ** 2) + 1e-12) / (np.sum(error ** 2) + 1e-12)))
+
+
+def compute_gap_mel_distance(original, reconstructed, sr=TARGET_SR, gap_start=None, gap_end=None,
+                             n_fft=1024, hop_length=256, n_mels=64):
+    ref, est = _slice_metric_region(original, reconstructed, gap_start, gap_end)
+    if len(ref) == 0:
+        return np.nan
+    if len(ref) < n_fft:
+        pad = n_fft - len(ref)
+        ref = np.pad(ref, (0, pad))
+        est = np.pad(est, (0, pad))
+    ref_mel = librosa.feature.melspectrogram(
+        y=ref.astype(np.float32), sr=sr, n_fft=n_fft, hop_length=hop_length,
+        n_mels=n_mels, power=2.0
+    )
+    est_mel = librosa.feature.melspectrogram(
+        y=est.astype(np.float32), sr=sr, n_fft=n_fft, hop_length=hop_length,
+        n_mels=n_mels, power=2.0
+    )
+    ref_peak = max(float(np.max(ref_mel)), 1e-10)
+    ref_db = librosa.power_to_db(ref_mel, ref=ref_peak)
+    est_db = librosa.power_to_db(est_mel, ref=ref_peak)
+    frames = min(ref_db.shape[-1], est_db.shape[-1])
+    return float(np.mean(np.abs(ref_db[..., :frames] - est_db[..., :frames])))
+
+
+def compute_gap_window_visqol_odg(original, reconstructed, sr=TARGET_SR, gap_start=None, gap_end=None,
+                                  pad_ms=EVAL_GAP_WINDOW_PAD_MS):
+    pad = int(round(sr * pad_ms / 1000))
+    n = min(len(original), len(reconstructed))
+    start = max(0, int(gap_start) - pad)
+    end = min(n, int(gap_end) + pad)
+    if end <= start:
+        return np.nan
+    try:
+        return compute_visqol_odg(original[start:end], reconstructed[start:end], sr)
+    except Exception as exc:
+        print(f"    Gap-window ViSQOL gagal ({exc}); nilai diisi NaN.")
+        return np.nan
 
 
 def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
@@ -1434,12 +1609,24 @@ compute_peaq_odg = compute_gstpeaq_odg
 compute_peaq = compute_gstpeaq_odg
 
 
-def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int = TARGET_SR):
+def _regions_are_centered(regions, audio_len, gap_ms, sr=TARGET_SR):
+    if not regions:
+        return True
+    center_start, center_end = compute_gap_bounds(audio_len, gap_ms, sr=sr)
+    return all(
+        int(region.get("gap_start", -1)) == center_start
+        and int(region.get("gap_end", -1)) == center_end
+        for region in regions
+    )
+
+
+def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int = TARGET_SR,
+                      gap_regions_by_gap: dict = None):
     """
     Evaluasi semua gap duration untuk satu model.
 
     Returns:
-        DataFrame dengan kolom `gap_ms`, `LSD`, `FAD`, `VISQOL_ODG`, dan `PEAQ_ODG`.
+        DataFrame dengan full-clip metrics dan gap-focused metrics.
     """
     results = []
     use_gpu_metrics = _eval_device().type == "cuda"
@@ -1452,11 +1639,21 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
     for gap_ms, recon_audios in reconstructed_dict.items():
         print(f"  Evaluating gap {gap_ms}ms...")
 
+        regions = (gap_regions_by_gap or {}).get(gap_ms)
+        if not regions:
+            regions = [
+                {"gap_start": compute_gap_bounds(len(orig), gap_ms, sr=sr)[0],
+                 "gap_end": compute_gap_bounds(len(orig), gap_ms, sr=sr)[1],
+                 "gap_position": "center"}
+                for orig in original_audios
+            ]
+        centered_regions = _regions_are_centered(regions, len(original_audios[0]), gap_ms, sr)
+
         # Hitung gap indices (konsisten dengan apply_gap_mask)
         gap_samples = int(round(sr * gap_ms / 1000))
         fad_score = compute_fad(original_audios, recon_audios, sr)
 
-        if use_gpu_metrics:
+        if use_gpu_metrics and centered_regions:
             try:
                 lsd_scores = compute_lsd_batch_gpu(original_audios, recon_audios, gap_ms, sr)
                 lsd_gap_only_scores = compute_lsd_batch_gpu(
@@ -1486,10 +1683,10 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
             lsd_scores = []
             lsd_gap_only_scores = []
             visqol_odg_scores = []
-            for orig, recon in zip(original_audios, recon_audios):
-                center = len(orig) // 2
-                gap_start = center - gap_samples // 2
-                gap_end = gap_start + gap_samples
+            for idx, (orig, recon) in enumerate(zip(original_audios, recon_audios)):
+                gap_start, gap_end = _metric_gap_bounds(
+                    len(orig), gap_ms, sr=sr, region=regions[idx] if idx < len(regions) else None
+                )
 
                 lsd_scores.append(compute_lsd(orig, recon, sr,
                                               gap_start=gap_start, gap_end=gap_end))
@@ -1497,6 +1694,24 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
                     orig, recon, sr, gap_start=gap_start, gap_end=gap_end, frame_pad=0
                 ))
                 visqol_odg_scores.append(compute_visqol_odg(orig, recon, sr))
+
+        gap_snr_scores = []
+        gap_si_sdr_scores = []
+        gap_mel_scores = []
+        gap_window_visqol_scores = []
+        for idx, (orig, recon) in enumerate(zip(original_audios, recon_audios)):
+            gap_start, gap_end = _metric_gap_bounds(
+                len(orig), gap_ms, sr=sr, region=regions[idx] if idx < len(regions) else None
+            )
+            gap_snr_scores.append(compute_gap_snr(orig, recon, gap_start, gap_end))
+            gap_si_sdr_scores.append(compute_gap_si_sdr(orig, recon, gap_start, gap_end))
+            gap_mel_scores.append(compute_gap_mel_distance(
+                orig, recon, sr=sr, gap_start=gap_start, gap_end=gap_end
+            ))
+            if EVAL_GAP_WINDOW_PERCEPTUAL:
+                gap_window_visqol_scores.append(compute_gap_window_visqol_odg(
+                    orig, recon, sr=sr, gap_start=gap_start, gap_end=gap_end
+                ))
 
         peaq_odg_scores = []
         if EVAL_USE_GSTPEAQ:
@@ -1506,11 +1721,18 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
 
         results.append({
             "gap_ms": gap_ms,
+            "gap_position": EVAL_GAP_POSITION,
             "LSD": round(np.mean(lsd_scores), 4),
             "LSD_GAP_ONLY": round(np.mean(lsd_gap_only_scores), 4),
+            "GAP_LSD": round(np.mean(lsd_gap_only_scores), 4),
+            "GAP_SI_SDR": round(np.nanmean(gap_si_sdr_scores), 4),
+            "GAP_SNR": round(np.nanmean(gap_snr_scores), 4),
+            "GAP_MEL_DISTANCE": round(np.nanmean(gap_mel_scores), 4),
             "FAD": round(fad_score, 4),
             "VISQOL_ODG": round(np.mean(visqol_odg_scores), 4),
             "PEAQ_ODG": round(np.mean(peaq_odg_scores), 4) if peaq_odg_scores else np.nan,
+            "GAP_WINDOW_VISQOL_ODG": round(np.nanmean(gap_window_visqol_scores), 4)
+            if gap_window_visqol_scores else np.nan,
         })
 
     return pd.DataFrame(results)
@@ -1598,10 +1820,16 @@ def save_results(results_df: pd.DataFrame, model_name: str):
     """
     results_df = results_df.copy()
     results_df["model"] = model_name
+    results_df["experiment_config_id"] = EXPERIMENT_CONFIG_ID
+    results_df["target_sr"] = TARGET_SR
+    results_df["segment_samples"] = SEGMENT_SAMPLES
+    if "gap_position" not in results_df.columns:
+        results_df["gap_position"] = EVAL_GAP_POSITION
     results_df["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Simpan file per model
-    model_path = os.path.join(PATHS["results"], f"{model_name}_results.csv")
+    result_artifact_name = evaluation_artifact_name(model_name)
+    model_path = os.path.join(PATHS["results"], f"{result_artifact_name}_results.csv")
     results_df.to_csv(model_path, index=False)
     print(f"💾 Hasil {model_name} disimpan: {model_path}")
 
@@ -1609,7 +1837,11 @@ def save_results(results_df: pd.DataFrame, model_name: str):
     master_path = os.path.join(PATHS["results"], "all_results.csv")
     if os.path.exists(master_path):
         existing = pd.read_csv(master_path)
-        existing = existing[existing["model"] != model_name]  # Hapus hasil lama
+        if "gap_position" not in existing.columns:
+            existing["gap_position"] = "center"
+        existing = existing[
+            ~((existing["model"] == model_name) & (existing["gap_position"] == EVAL_GAP_POSITION))
+        ]  # Hapus hasil lama untuk model + eval gap position yang sama
         combined = pd.concat([existing, results_df], ignore_index=True)
     else:
         combined = results_df
@@ -1701,7 +1933,29 @@ def _read_single_timing_seconds(path, column):
 
 
 def model_name_from_label(label):
-    text = str(label).lower().replace("+", " ").replace("-", " ")
+    raw = str(label).strip()
+    if raw in EXPECTED_MODEL_CONFIGS or raw in ALL_MODELS:
+        return raw
+    text = raw.lower().replace("+", " ").replace("-", " ")
+    text = " ".join(text.split())
+    explicit = {
+        "baseline cqtdiff": "baseline_cqtdiff",
+        "baseline cqt diff": "baseline_cqtdiff",
+        "baseline fine tuned no ssl": "baseline_cqtdiff_finetuned",
+        "baseline finetuned no ssl": "baseline_cqtdiff_finetuned",
+        "fine tuned baseline no ssl": "baseline_cqtdiff_finetuned",
+        "finetuned baseline no ssl": "baseline_cqtdiff_finetuned",
+        "clap cqtdiff": "clap_cqtdiff",
+        "clap cqt diff": "clap_cqtdiff",
+        "clap maid": "clap_maid",
+        "audiomae cqtdiff": "audiomae_cqtdiff",
+        "audiomae cqt diff": "audiomae_cqtdiff",
+        "audiomae maid": "audiomae_maid",
+    }
+    if text in explicit:
+        return explicit[text]
+    if "baseline" in text and ("fine tuned" in text or "finetuned" in text or "no ssl" in text):
+        return "baseline_cqtdiff_finetuned"
     if "baseline" in text:
         return "baseline_cqtdiff"
     if "clap" in text and "maid" in text:
@@ -1752,7 +2006,7 @@ def save_training_history_artifacts(model_name, history):
 
 
 def update_experiment_summary():
-    """Write CSV/JSON summary for all 5 configurations."""
+    """Write CSV/JSON summary for all configured baselines and hybrids."""
     rows = []
     timing_path = os.path.join(PATHS["results"], "training_timing_summary.csv")
     eval_timing_path = os.path.join(PATHS["results"], "evaluation_timing_summary.csv")
@@ -1769,6 +2023,11 @@ def update_experiment_summary():
             "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
             "model": model_name,
             "dataset_fraction": globals().get("DATASET_FRACTION", None),
+            "experiment_config_id": EXPERIMENT_CONFIG_ID,
+            "target_sr": TARGET_SR,
+            "segment_samples": SEGMENT_SAMPLES,
+            "segment_duration": SEGMENT_DURATION,
+            "eval_gap_position": EVAL_GAP_POSITION,
             "batch_size": None,
             "epochs": None,
             "training_seconds": None,
@@ -1779,6 +2038,11 @@ def update_experiment_summary():
             "peak_vram_gb": None,
             "checkpoint_path": None,
             "final_LSD_mean": None,
+            "final_LSD_GAP_ONLY_mean": None,
+            "final_GAP_LSD_mean": None,
+            "final_GAP_SI_SDR_mean": None,
+            "final_GAP_SNR_mean": None,
+            "final_GAP_MEL_DISTANCE_mean": None,
             "final_FAD_mean": None,
             "final_VISQOL_ODG_mean": None,
             "final_PEAQ_ODG_mean": None,
@@ -1802,6 +2066,8 @@ def update_experiment_summary():
 
         if not eval_df.empty and "model" in eval_df.columns:
             e = eval_df[eval_df["model"] == model_name]
+            if "eval_gap_position" in e.columns:
+                e = e[e["eval_gap_position"].fillna("center") == EVAL_GAP_POSITION]
             if not e.empty:
                 last = e.iloc[-1]
                 row["evaluation_seconds"] = safe_float(last.get("evaluation_seconds"))
@@ -1810,8 +2076,14 @@ def update_experiment_summary():
 
         if not results_df.empty and "model" in results_df.columns:
             r = results_df[results_df["model"] == model_name]
+            if "gap_position" in r.columns:
+                r = r[r["gap_position"].fillna("center") == EVAL_GAP_POSITION]
             if not r.empty:
-                for metric in ["LSD", "FAD", "VISQOL_ODG", "PEAQ_ODG"]:
+                for metric in [
+                    "LSD", "LSD_GAP_ONLY", "GAP_LSD", "GAP_SI_SDR", "GAP_SNR",
+                    "GAP_MEL_DISTANCE", "FAD", "VISQOL_ODG", "PEAQ_ODG",
+                    "GAP_WINDOW_VISQOL_ODG",
+                ]:
                     if metric in r.columns:
                         row[f"final_{metric}_mean"] = safe_float(r[metric].mean())
                 row["status"] = "evaluated"
@@ -1834,6 +2106,10 @@ def record_evaluation_timing(model_name, total_seconds, n_eval_samples=None):
         "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
         "model": model_name,
         "n_eval_samples": n_eval_samples,
+        "experiment_config_id": EXPERIMENT_CONFIG_ID,
+        "target_sr": TARGET_SR,
+        "segment_samples": SEGMENT_SAMPLES,
+        "eval_gap_position": EVAL_GAP_POSITION,
         "evaluation_seconds": float(total_seconds or 0.0),
         "evaluation_time": format_duration(total_seconds or 0.0),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1841,7 +2117,11 @@ def record_evaluation_timing(model_name, total_seconds, n_eval_samples=None):
     timing_path = os.path.join(PATHS["results"], "evaluation_timing_summary.csv")
     if os.path.exists(timing_path):
         timing_df = pd.read_csv(timing_path)
-        timing_df = timing_df[timing_df["model"] != model_name]
+        if "eval_gap_position" not in timing_df.columns:
+            timing_df["eval_gap_position"] = "center"
+        timing_df = timing_df[
+            ~((timing_df["model"] == model_name) & (timing_df["eval_gap_position"] == EVAL_GAP_POSITION))
+        ]
         timing_df = pd.concat([timing_df, pd.DataFrame([row])], ignore_index=True)
     else:
         timing_df = pd.DataFrame([row])
@@ -1881,6 +2161,10 @@ def record_training_timing(model_name, total_seconds, num_epochs, lr, batch_size
         "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
         "model": model_name,
         "status": status,
+        "experiment_config_id": EXPERIMENT_CONFIG_ID,
+        "target_sr": TARGET_SR,
+        "segment_samples": SEGMENT_SAMPLES,
+        "segment_duration": SEGMENT_DURATION,
         "dataset_fraction": dataset_fraction,
         "batch_size": batch_size,
         "num_epochs": num_epochs,
@@ -1968,7 +2252,7 @@ def check_if_done(model_name: str):
         True  : sudah selesai, bisa di-skip
         False : belum selesai, perlu dijalankan
     """
-    result_path = os.path.join(PATHS["results"], f"{model_name}_results.csv")
+    result_path = os.path.join(PATHS["results"], f"{evaluation_artifact_name(model_name)}_results.csv")
     if os.path.exists(result_path):
         print(f"✅ {model_name} sudah selesai sebelumnya.")
         print(f"   Untuk menjalankan ulang, hapus: {result_path}")
@@ -2083,7 +2367,7 @@ def get_data_splits(meta_df=None):
     print(f"  split seed: {DATASET_RANDOM_SEED} | stratified by composer + instrument")
     return splits
 
-def load_preprocessed_data(n_samples: int = 50, split: str = "test"):
+def load_preprocessed_data(n_samples: int = 50, split: str = "test", gap_position: str = None):
     """
     Load data yang sudah dipreprocess dari Drive.
 
@@ -2097,6 +2381,7 @@ def load_preprocessed_data(n_samples: int = 50, split: str = "test"):
     Returns:
         original_audios : List audio ground truth
         masked_by_gap   : {gap_ms: [list audio masked]}
+        gap_regions     : {gap_ms: [{"gap_start", "gap_end", "gap_position"}]}
     """
     meta_path = os.path.join(PATHS["preprocessed"], "metadata.csv")
     if not os.path.exists(meta_path):
@@ -2110,23 +2395,47 @@ def load_preprocessed_data(n_samples: int = 50, split: str = "test"):
 
     selected = _stratified_sample_table(split_df, min(n_samples, len(split_df)), seed=DATASET_RANDOM_SEED + 2)
 
-    print(f"📂 Loading {len(selected)} sampel dari Drive (split={split})...")
+    gap_position = (gap_position or EVAL_GAP_POSITION).strip().lower()
+    if gap_position not in {"center", "random"}:
+        raise ValueError("gap_position harus 'center' atau 'random'.")
+
+    print(f"📂 Loading {len(selected)} sampel dari Drive (split={split}, gap_position={gap_position})...")
 
     original_audios = []
     masked_by_gap = {gap_ms: [] for gap_ms in GAP_DURATIONS_MS}
+    gap_regions = {gap_ms: [] for gap_ms in GAP_DURATIONS_MS}
 
-    for _, row in selected.iterrows():
-        orig_audio, _ = sf.read(row["clean_path"])
+    for sample_index, (_, row) in enumerate(selected.iterrows()):
+        orig_audio, sr_loaded = sf.read(row["clean_path"])
+        if int(sr_loaded) != int(TARGET_SR):
+            raise RuntimeError(f"SR preprocessed tidak cocok: {sr_loaded} != {TARGET_SR} pada {row['clean_path']}")
+        orig_audio = np.asarray(orig_audio, dtype=np.float32)
         original_audios.append(orig_audio)
 
         filename = os.path.basename(row["clean_path"])
         for gap_ms in GAP_DURATIONS_MS:
-            masked_path = os.path.join(PATHS["masked"], f"gap_{gap_ms}ms", filename)
-            masked_audio, _ = sf.read(masked_path)
+            if gap_position == "center":
+                masked_path = os.path.join(PATHS["masked"], f"gap_{gap_ms}ms", filename)
+                masked_audio, sr_masked = sf.read(masked_path)
+                if int(sr_masked) != int(TARGET_SR):
+                    raise RuntimeError(f"SR masked tidak cocok: {sr_masked} != {TARGET_SR} pada {masked_path}")
+                mask, gap_start, gap_end = make_gap_mask(len(orig_audio), gap_ms)
+                masked_audio = np.asarray(masked_audio, dtype=np.float32)
+            else:
+                mask, gap_start, gap_end = make_eval_gap_mask(
+                    len(orig_audio), gap_ms, sample_index=sample_index, sr=TARGET_SR
+                )
+                masked_audio = orig_audio.copy()
+                masked_audio[gap_start:gap_end] = 0.0
             masked_by_gap[gap_ms].append(masked_audio)
+            gap_regions[gap_ms].append({
+                "gap_start": int(gap_start),
+                "gap_end": int(gap_end),
+                "gap_position": gap_position,
+            })
 
     print(f"✅ {len(original_audios)} sampel siap dievaluasi.")
-    return original_audios, masked_by_gap
+    return original_audios, masked_by_gap, gap_regions
 
 
 print("✅ Helper functions berhasil didefinisikan!")
@@ -2178,14 +2487,28 @@ except Exception:
 
 
 def make_gap_mask(audio_length, gap_ms, sr=TARGET_SR):
-    gap_samples = int(round(sr * gap_ms / 1000))
-    center = audio_length // 2
-    gap_start = center - gap_samples // 2
-    gap_end = gap_start + gap_samples
+    return build_gap_mask_array(audio_length, gap_ms, sr=sr)
 
-    mask = np.zeros(audio_length, dtype=bool)
-    mask[gap_start:gap_end] = True
-    return mask, gap_start, gap_end
+
+def make_eval_gap_mask(audio_length, gap_ms, sample_index, sr=TARGET_SR):
+    """Center gap by default; deterministic non-center random gap for robustness eval."""
+    if EVAL_GAP_POSITION == "center":
+        return make_gap_mask(audio_length, gap_ms, sr=sr)
+
+    gap_samples = int(round(sr * gap_ms / 1000))
+    min_context = int(round(sr * EVAL_RANDOM_GAP_MIN_CONTEXT_MS / 1000))
+    min_start = min_context
+    max_start = audio_length - gap_samples - min_context
+    if max_start < min_start:
+        min_start = 0
+        max_start = audio_length - gap_samples
+    if max_start < min_start:
+        raise ValueError(
+            f"Random gap {gap_ms}ms tidak valid untuk audio_length={audio_length}, sr={sr}."
+        )
+    rng = np.random.default_rng(DATASET_RANDOM_SEED + 100_000 + int(sample_index) * 997 + int(gap_ms))
+    gap_start = int(rng.integers(min_start, max_start + 1))
+    return build_gap_mask_array(audio_length, gap_ms, sr=sr, gap_start=gap_start)
 
 
 def crossfade_boundary(original, reconstructed, gap_start, gap_end,
@@ -2218,11 +2541,18 @@ def crossfade_boundary(original, reconstructed, gap_start, gap_end,
     return output
 
 
+def evaluation_artifact_name(model_name: str):
+    """Separate optional robustness-eval artifacts from main center-gap artifacts."""
+    if EVAL_GAP_POSITION == "center":
+        return model_name
+    return f"{model_name}_{EVAL_GAP_POSITION}gap"
+
+
 def prepare_reconstructed_outputs(model_name: str, clear: bool = False):
     """Siapkan folder reconstructed audio; hapus hanya jika diminta eksplisit."""
     import shutil
 
-    out_dir = os.path.join(PATHS["outputs"], model_name)
+    out_dir = os.path.join(PATHS["outputs"], evaluation_artifact_name(model_name))
     if clear and os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -2235,13 +2565,14 @@ def reset_reconstructed_outputs(model_name: str):
 
 
 def reconstructed_output_path(model_name: str, gap_ms: int, sample_index: int):
-    out_dir = os.path.join(PATHS["outputs"], model_name, f"gap_{gap_ms}ms")
-    filename = f"{model_name}_gap{gap_ms}ms_sample{sample_index:04d}_reconstructed.wav"
+    artifact_name = evaluation_artifact_name(model_name)
+    out_dir = os.path.join(PATHS["outputs"], artifact_name, f"gap_{gap_ms}ms")
+    filename = f"{artifact_name}_gap{gap_ms}ms_sample{sample_index:04d}_reconstructed.wav"
     return os.path.join(out_dir, filename)
 
 
 CURRENT_RECONSTRUCTION_CACHE_TAG = None
-EVAL_CACHE_CODE_VERSION = "eval_cache_v2_checkpoint_aware"
+EVAL_CACHE_CODE_VERSION = "eval_cache_v3_native_cqt_gapaware"
 
 
 def _file_fingerprint(path: str):
@@ -2271,12 +2602,15 @@ def set_reconstruction_cache_context(model_name: str, decoder, checkpoint_path: 
     context = {
         "version": EVAL_CACHE_CODE_VERSION,
         "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
+        "experiment_config_id": EXPERIMENT_CONFIG_ID,
         "model": model_name,
         "checkpoint": _file_fingerprint(checkpoint_path),
         "decoder": _decoder_cache_identity(decoder),
         "target_sr": int(TARGET_SR),
         "segment_samples": int(SEGMENT_SAMPLES),
         "gap_durations_ms": list(GAP_DURATIONS_MS),
+        "eval_gap_position": EVAL_GAP_POSITION,
+        "eval_random_gap_min_context_ms": int(EVAL_RANDOM_GAP_MIN_CONTEXT_MS),
     }
     CURRENT_RECONSTRUCTION_CACHE_TAG = json.dumps(context, sort_keys=True)
     return CURRENT_RECONSTRUCTION_CACHE_TAG
@@ -2305,6 +2639,8 @@ def save_reconstructed_output(model_name: str, gap_ms: int, sample_index: int,
         "sample_index": int(sample_index),
         "sr": int(sr),
         "n_samples": int(len(audio)),
+        "experiment_config_id": EXPERIMENT_CONFIG_ID,
+        "eval_gap_position": EVAL_GAP_POSITION,
         "cache_tag": CURRENT_RECONSTRUCTION_CACHE_TAG,
         "saved_at": pd.Timestamp.now().isoformat(),
     }
@@ -2370,7 +2706,7 @@ def summarize_reconstruction_cache(model_name: str, n_eval_samples: int):
 
     print(
         f"  Reconstruction cache probe: {existing}/{total_expected} WAV ditemukan "
-        f"di {os.path.join(PATHS['outputs'], model_name)}"
+        f"di {os.path.join(PATHS['outputs'], evaluation_artifact_name(model_name))}"
     )
     if missing_examples:
         print("  Contoh path yang belum ada:")
@@ -2380,7 +2716,7 @@ def summarize_reconstruction_cache(model_name: str, n_eval_samples: int):
 
 
 def save_reconstruction_manifest(model_name: str, rows: list):
-    out_dir = os.path.join(PATHS["outputs"], model_name)
+    out_dir = os.path.join(PATHS["outputs"], evaluation_artifact_name(model_name))
     os.makedirs(out_dir, exist_ok=True)
     manifest_path = os.path.join(out_dir, "manifest.csv")
     pd.DataFrame(rows).to_csv(manifest_path, index=False)
@@ -2388,7 +2724,8 @@ def save_reconstruction_manifest(model_name: str, rows: list):
     return manifest_path
 
 
-def validate_masked_gap_alignment(original, masked, mask, gap_ms, sr=TARGET_SR, atol=2e-4):
+def validate_masked_gap_alignment(original, masked, mask, gap_ms, sr=TARGET_SR,
+                                  atol=2e-4, expected_gap_start=None, expected_gap_end=None):
     """Fail-fast jika file masked tidak memiliki gap di posisi yang sama dengan mask evaluasi."""
     original = np.asarray(original, dtype=np.float32)
     masked = np.asarray(masked, dtype=np.float32)
@@ -2399,8 +2736,10 @@ def validate_masked_gap_alignment(original, masked, mask, gap_ms, sr=TARGET_SR, 
     mask = mask[:n]
 
     gap_samples = int(round(sr * gap_ms / 1000))
-    expected_start = n // 2 - gap_samples // 2
-    expected_end = expected_start + gap_samples
+    if expected_gap_start is None or expected_gap_end is None:
+        expected_start, expected_end = compute_gap_bounds(n, gap_ms, sr=sr)
+    else:
+        expected_start, expected_end = int(expected_gap_start), int(expected_gap_end)
     gap_idx = np.flatnonzero(mask)
     if len(gap_idx) != gap_samples or gap_idx[0] != expected_start or gap_idx[-1] + 1 != expected_end:
         raise RuntimeError(
@@ -2425,19 +2764,21 @@ def validate_masked_gap_alignment(original, masked, mask, gap_ms, sr=TARGET_SR, 
     }
 
 
-def _gap_region_stats(original, reconstructed, gap_ms, sr=TARGET_SR):
+def _gap_region_stats(original, reconstructed, gap_ms, sr=TARGET_SR, gap_start=None, gap_end=None):
     n = min(len(original), len(reconstructed))
     original = np.asarray(original[:n], dtype=np.float32)
     reconstructed = np.asarray(reconstructed[:n], dtype=np.float32)
-    gap_samples = int(round(sr * gap_ms / 1000))
-    gap_start = n // 2 - gap_samples // 2
-    gap_end = gap_start + gap_samples
+    if gap_start is None or gap_end is None:
+        gap_start, gap_end = compute_gap_bounds(n, gap_ms, sr=sr)
+    gap_start, gap_end = int(gap_start), int(gap_end)
     ref_gap = original[gap_start:gap_end]
     rec_gap = reconstructed[gap_start:gap_end]
     eps = 1e-12
     ref_rms = float(np.sqrt(np.mean(ref_gap ** 2) + eps))
     rec_rms = float(np.sqrt(np.mean(rec_gap ** 2) + eps))
     return {
+        "gap_start": int(gap_start),
+        "gap_end": int(gap_end),
         "ref_gap_rms": ref_rms,
         "recon_gap_rms": rec_rms,
         "gap_gain_db": float(20.0 * np.log10((rec_rms + eps) / (ref_rms + eps))),
@@ -2449,17 +2790,25 @@ def _gap_region_stats(original, reconstructed, gap_ms, sr=TARGET_SR):
 
 
 def save_reconstruction_diagnostics(model_name: str, original_audios: list, reconstructed_dict: dict,
-                                    alignment_rows: list = None, conditioning_rows: list = None):
+                                    alignment_rows: list = None, conditioning_rows: list = None,
+                                    gap_regions_by_gap: dict = None):
     """Simpan diagnostik gain/posisi/conditioning untuk audit hasil evaluasi."""
-    out_dir = os.path.join(PATHS["outputs"], model_name)
+    out_dir = os.path.join(PATHS["outputs"], evaluation_artifact_name(model_name))
     os.makedirs(out_dir, exist_ok=True)
 
     rows = []
     for gap_ms, recon_audios in reconstructed_dict.items():
-        per_sample = [
-            _gap_region_stats(orig, recon, gap_ms, TARGET_SR)
-            for orig, recon in zip(original_audios, recon_audios)
-        ]
+        regions = (gap_regions_by_gap or {}).get(gap_ms, [])
+        per_sample = []
+        for idx, (orig, recon) in enumerate(zip(original_audios, recon_audios)):
+            region = regions[idx] if idx < len(regions) else {}
+            per_sample.append(
+                _gap_region_stats(
+                    orig, recon, gap_ms, TARGET_SR,
+                    gap_start=region.get("gap_start"),
+                    gap_end=region.get("gap_end"),
+                )
+            )
         row = {"model": model_name, "gap_ms": int(gap_ms), "n_samples": int(len(per_sample))}
         for key in per_sample[0].keys():
             values = np.asarray([item[key] for item in per_sample], dtype=np.float64)
@@ -2600,9 +2949,13 @@ def make_dataloaders(batch_size=16, num_workers=AUTO_NUM_WORKERS, cache_audio=CA
 def _encoder_cache_path(model_name, split_name, dataset_len):
     encoder_key = str(model_name).split("_")[0]
     gaps = "-".join(str(g) for g in GAP_DURATIONS_MS)
+    config_key = EXPERIMENT_CONFIG_ID.replace(".", "p")
     cache_dir = os.path.join(PATHS["preprocessed"], "encoder_latents")
     os.makedirs(cache_dir, exist_ok=True)
-    return os.path.join(cache_dir, f"{encoder_key}_{split_name}_n{dataset_len}_sr{TARGET_SR}_gaps{gaps}.pt")
+    return os.path.join(
+        cache_dir,
+        f"{encoder_key}_{split_name}_n{dataset_len}_{config_key}_gaps{gaps}.pt",
+    )
 
 
 def precompute_encoder_latents_for_dataset(base_dataset, encoder_fn, device, batch_size, num_workers,
@@ -4157,7 +4510,8 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
     return decoder, film
 
 
-def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film_layer, device, n_eval_samples: int = 50):
+def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film_layer, device,
+                                     n_eval_samples: int = 50, model_name: str = None):
     """
     Evaluasi hybrid model (encoder + FiLM + decoder).
 
@@ -4165,7 +4519,9 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     FiLM conditioning di-inject ke fitur decoder sesuai interface adapter.
     """
     evaluation_start = time.perf_counter()
-    model_name = model_name_from_label(model_label)
+    model_name = model_name or model_name_from_label(model_label)
+    if model_name not in EXPECTED_MODEL_CONFIGS and model_name not in ALL_MODELS:
+        raise ValueError(f"Model name evaluasi tidak dikenal: {model_name}")
     cache_tag = set_reconstruction_cache_context(
         model_name,
         decoder,
@@ -4175,7 +4531,9 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     output_manifest_rows = []
     alignment_rows = []
     conditioning_rows = []
-    original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
+    original_audios, masked_by_gap, gap_regions_by_gap = load_preprocessed_data(
+        n_eval_samples, gap_position=EVAL_GAP_POSITION
+    )
     reconstructed_dict = {}
     reused_count = 0
     generated_count = 0
@@ -4193,6 +4551,7 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
         reconstructed_list = []
 
         for index, (orig_audio, masked_audio) in enumerate(zip(original_audios, masked_by_gap[gap_ms])):
+            gap_region = gap_regions_by_gap[gap_ms][index]
             if (index + 1) % 10 == 0:
                 print(f"    Sample {index+1}/{n_eval_samples}")
 
@@ -4210,9 +4569,19 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                         raise RuntimeError(f"Encoder latent {model_name} mengandung NaN/Inf pada gap={gap_ms}, sample={index}.")
 
                     masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
-                    mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
-                    align = validate_masked_gap_alignment(orig_audio, masked_audio, mask, gap_ms)
-                    align.update({"model": model_name, "gap_ms": int(gap_ms), "sample_index": int(index)})
+                    mask, gap_start, gap_end = build_gap_mask_array(
+                        len(masked_audio), gap_ms, gap_start=gap_region["gap_start"]
+                    )
+                    align = validate_masked_gap_alignment(
+                        orig_audio, masked_audio, mask, gap_ms,
+                        expected_gap_start=gap_start, expected_gap_end=gap_end,
+                    )
+                    align.update({
+                        "model": model_name,
+                        "gap_ms": int(gap_ms),
+                        "sample_index": int(index),
+                        "gap_position": gap_region["gap_position"],
+                    })
                     alignment_rows.append(align)
                     mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
@@ -4299,15 +4668,21 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                 "sr": TARGET_SR,
                 "n_samples": int(len(reconstructed)),
                 "duration_seconds": float(len(reconstructed) / TARGET_SR),
+                "gap_start": int(gap_region["gap_start"]),
+                "gap_end": int(gap_region["gap_end"]),
+                "gap_position": gap_region["gap_position"],
                 "reconstructed_path": output_path,
             })
 
         reconstructed_dict[gap_ms] = reconstructed_list
 
     save_reconstruction_manifest(model_name, output_manifest_rows)
-    save_reconstruction_diagnostics(model_name, original_audios, reconstructed_dict, alignment_rows, conditioning_rows)
+    save_reconstruction_diagnostics(
+        model_name, original_audios, reconstructed_dict, alignment_rows,
+        conditioning_rows, gap_regions_by_gap=gap_regions_by_gap,
+    )
     print(f"  Rekonstruksi reused/generated: {reused_count}/{generated_count}")
-    results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
+    results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR, gap_regions_by_gap)
     record_evaluation_timing(model_name, time.perf_counter() - evaluation_start, n_eval_samples)
     return results_df
 
@@ -4323,7 +4698,9 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
     prepare_reconstructed_outputs(model_name, clear=EVAL_CLEAR_RECONSTRUCTIONS)
     output_manifest_rows = []
     alignment_rows = []
-    original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
+    original_audios, masked_by_gap, gap_regions_by_gap = load_preprocessed_data(
+        n_eval_samples, gap_position=EVAL_GAP_POSITION
+    )
     reconstructed_dict = {}
     reused_count = 0
     generated_count = 0
@@ -4341,6 +4718,7 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
         reconstructed_list = []
 
         for i, (orig_audio, masked_audio) in enumerate(zip(original_audios, masked_by_gap[gap_ms])):
+            gap_region = gap_regions_by_gap[gap_ms][i]
             if (i + 1) % 10 == 0:
                 print(f"    Sample {i+1}/{n_eval_samples}")
 
@@ -4353,9 +4731,19 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
             else:
                 with torch.inference_mode():
                     masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
-                    mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
-                    align = validate_masked_gap_alignment(orig_audio, masked_audio, mask, gap_ms)
-                    align.update({"model": model_name, "gap_ms": int(gap_ms), "sample_index": int(i)})
+                    mask, gap_start, gap_end = build_gap_mask_array(
+                        len(masked_audio), gap_ms, gap_start=gap_region["gap_start"]
+                    )
+                    align = validate_masked_gap_alignment(
+                        orig_audio, masked_audio, mask, gap_ms,
+                        expected_gap_start=gap_start, expected_gap_end=gap_end,
+                    )
+                    align.update({
+                        "model": model_name,
+                        "gap_ms": int(gap_ms),
+                        "sample_index": int(i),
+                        "gap_position": gap_region["gap_position"],
+                    })
                     alignment_rows.append(align)
                     mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
@@ -4377,15 +4765,21 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
                 "sr": TARGET_SR,
                 "n_samples": int(len(reconstructed)),
                 "duration_seconds": float(len(reconstructed) / TARGET_SR),
+                "gap_start": int(gap_region["gap_start"]),
+                "gap_end": int(gap_region["gap_end"]),
+                "gap_position": gap_region["gap_position"],
                 "reconstructed_path": output_path,
             })
 
         reconstructed_dict[gap_ms] = reconstructed_list
 
     save_reconstruction_manifest(model_name, output_manifest_rows)
-    save_reconstruction_diagnostics(model_name, original_audios, reconstructed_dict, alignment_rows, None)
+    save_reconstruction_diagnostics(
+        model_name, original_audios, reconstructed_dict, alignment_rows, None,
+        gap_regions_by_gap=gap_regions_by_gap,
+    )
     print(f"  Rekonstruksi reused/generated: {reused_count}/{generated_count}")
-    results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
+    results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR, gap_regions_by_gap)
     record_evaluation_timing(model_name, time.perf_counter() - baseline_eval_start, n_eval_samples)
     return results_df
 
@@ -4485,7 +4879,7 @@ def _missing_selected_run_targets():
 
     if "eval" in RUN_PHASES:
         for model_name in sorted(RUN_MODEL_SELECTION):
-            result_path = os.path.join(PATHS["results"], f"{model_name}_results.csv")
+            result_path = os.path.join(PATHS["results"], f"{evaluation_artifact_name(model_name)}_results.csv")
             if not os.path.exists(result_path):
                 missing.append(f"eval:{model_name} -> {result_path}")
 
@@ -4520,20 +4914,12 @@ def maybe_auto_stop_instance():
 
 
 # ---
-# ## CELL 7 — BASELINE: CQT-Diff+ Standalone (Trained)
-# 
-# Ini adalah **baseline** — CQT-Diff+ original **di-train tanpa encoder SSL dan tanpa FiLM**.
-# 
-# **Perubahan penting dari versi sebelumnya:**
-# - Baseline sekarang **juga di-train** (reconstruction loss di STFT domain)
-# - Perbandingan menjadi **fair**: satu-satunya perbedaan antara baseline vs hybrid adalah **ada/tidaknya SSL encoder conditioning**
-# - Bukan lagi random weights vs trained
-# 
-# Fungsinya sebagai titik pembanding:
-# - Kalau model hybrid (Cell 8-11) lebih baik dari baseline → SSL encoder memberikan kontribusi nyata
-# - Kalau hasil hampir sama → perlu investigasi lebih lanjut
-# 
-# ⚠️ **Jalankan cell ini sebelum Cell 8-11.**
+# ## CELL 7 — BASELINE: CQT-Diff+ Standalone (Pretrained)
+#
+# Baseline pretrained mengukur kemampuan checkpoint CQT-Diff+ asli tanpa
+# adaptation ke MusicNet dan tanpa SSL. Klaim kontribusi SSL tidak boleh
+# hanya dibandingkan ke baseline ini; gunakan Cell 7B
+# `baseline_cqtdiff_finetuned` sebagai pembanding fair no-SSL.
 
 
 # ============================================================
@@ -4549,9 +4935,10 @@ def maybe_auto_stop_instance():
 # - Baseline menunjukkan kemampuan murni CQT-Diff+ tanpa SSL conditioning
 # - Hybrid models (Cell 8-11) menambahkan SSL encoder + FiLM di atas ini
 #
-# Perbandingan tetap FAIR karena:
-# - Backbone yang sama dipakai oleh baseline dan semua hybrid
-# - Bedanya cuma ada/tidaknya SSL encoder conditioning
+# Untuk fairness thesis:
+# - baseline_cqtdiff: pretrained, tanpa fine-tuning, tanpa SSL
+# - baseline_cqtdiff_finetuned: fine-tuned adapter no-SSL
+# - clap/audiomae_cqtdiff: fine-tuned adapter dengan SSL-guided residual conditioning
 # ============================================================
 
 import torch
@@ -4565,7 +4952,7 @@ print(f"Config stage: {PIPELINE_STAGE_NAME} | model: {MODEL_NAME} | mode: pretra
 
 # Hapus hasil lama kalau FORCE_REEVAL aktif
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
-    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    old_result = os.path.join(PATHS["results"], f"{evaluation_artifact_name(MODEL_NAME)}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
         print(f"Hasil lama dihapus: {old_result}")
@@ -4708,7 +5095,7 @@ MODEL_NAME = "baseline_cqtdiff_finetuned"
 FORCE_REEVAL = True
 
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
-    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    old_result = os.path.join(PATHS["results"], f"{evaluation_artifact_name(MODEL_NAME)}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
         print(f"Hasil lama dihapus: {old_result}")
@@ -4755,6 +5142,7 @@ else:
             film_layer,
             device,
             n_eval_samples=N_EVAL_SAMPLES,
+            model_name=MODEL_NAME,
         )
 
         print(f"\nHasil {MODEL_NAME}:")
@@ -4859,7 +5247,7 @@ MODEL_NAME = "clap_cqtdiff"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update arsitektur
 
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
-    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    old_result = os.path.join(PATHS["results"], f"{evaluation_artifact_name(MODEL_NAME)}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
@@ -4896,6 +5284,7 @@ else:
             film_layer,
             device,
             n_eval_samples=N_EVAL_SAMPLES,
+            model_name=MODEL_NAME,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -4989,7 +5378,7 @@ MODEL_NAME = "clap_maid"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update
 
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
-    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    old_result = os.path.join(PATHS["results"], f"{evaluation_artifact_name(MODEL_NAME)}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
@@ -5026,6 +5415,7 @@ else:
             film_layer,
             device,
             n_eval_samples=N_EVAL_SAMPLES,
+            model_name=MODEL_NAME,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -5119,7 +5509,7 @@ MODEL_NAME = "audiomae_cqtdiff"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update arsitektur
 
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
-    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    old_result = os.path.join(PATHS["results"], f"{evaluation_artifact_name(MODEL_NAME)}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
@@ -5156,6 +5546,7 @@ else:
             film_layer,
             device,
             n_eval_samples=N_EVAL_SAMPLES,
+            model_name=MODEL_NAME,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -5248,7 +5639,7 @@ MODEL_NAME = "audiomae_maid"
 FORCE_REEVAL = True  # <-- True buat re-evaluasi setelah update
 
 if should_run_eval(MODEL_NAME) and FORCE_REEVAL:
-    old_result = os.path.join(PATHS["results"], f"{MODEL_NAME}_results.csv")
+    old_result = os.path.join(PATHS["results"], f"{evaluation_artifact_name(MODEL_NAME)}_results.csv")
     if os.path.exists(old_result):
         os.remove(old_result)
 
@@ -5285,6 +5676,7 @@ else:
             film_layer,
             device,
             n_eval_samples=N_EVAL_SAMPLES,
+            model_name=MODEL_NAME,
         )
 
         print(f"\n📋 Hasil {MODEL_NAME}:")
@@ -5336,6 +5728,12 @@ else:
     if "VISQOL_ODG" not in all_results.columns:
         if "VISQOL" in all_results.columns:
             all_results["VISQOL_ODG"] = all_results["VISQOL"]
+    if "gap_position" not in all_results.columns:
+        all_results["gap_position"] = "center"
+    all_results = all_results[all_results["gap_position"].fillna("center") == EVAL_GAP_POSITION].copy()
+    if all_results.empty:
+        print(f"❌ Tidak ada hasil untuk gap_position={EVAL_GAP_POSITION}.")
+        sys.exit(0)
 
     # Cek model mana yang sudah selesai
     available_models = all_results["model"].unique()
@@ -5350,17 +5748,27 @@ else:
     print("TABEL PERBANDINGAN LENGKAP")
     print("="*70)
 
-    metric_order = [m for m in ["LSD", "FAD", "VISQOL_ODG", "PEAQ_ODG"] if m in all_results.columns]
+    metric_order = [
+        m for m in [
+            "LSD", "LSD_GAP_ONLY", "GAP_SI_SDR", "GAP_SNR", "GAP_MEL_DISTANCE",
+            "FAD", "VISQOL_ODG", "PEAQ_ODG", "GAP_WINDOW_VISQOL_ODG",
+        ]
+        if m in all_results.columns
+    ]
     for metric in metric_order:
-        if metric in ["LSD", "FAD"]:
+        if metric in ["LSD", "LSD_GAP_ONLY", "GAP_LSD", "GAP_MEL_DISTANCE", "FAD"]:
             direction = "↓ lebih rendah = lebih baik"
+        elif metric in ["GAP_SI_SDR", "GAP_SNR"]:
+            direction = "↑ lebih tinggi = lebih baik"
         else:
             direction = "↑ mendekati 0 = lebih baik"
         print(f"\n{metric} ({direction}):")
         pivot = all_results.pivot(index="gap_ms", columns="model", values=metric)
         # Urutkan kolom: baseline dulu, lalu hybrid
-        ordered_cols = [c for c in ["baseline_cqtdiff", "clap_cqtdiff", "clap_maid",
-                                     "audiomae_cqtdiff", "audiomae_maid"] if c in pivot.columns]
+        ordered_cols = [c for c in [
+            "baseline_cqtdiff", "baseline_cqtdiff_finetuned",
+            "clap_cqtdiff", "audiomae_cqtdiff", "clap_maid", "audiomae_maid",
+        ] if c in pivot.columns]
         print(pivot[ordered_cols].to_string())
 
 
@@ -5372,7 +5780,9 @@ else:
     # Hybrid: garis solid berwarna
     styles = {
         "baseline_cqtdiff":  {"color": "#000000", "marker": "x", "linestyle": "--",
-                               "label": "Baseline: CQT-Diff+", "linewidth": 2.5, "zorder": 10},
+                               "label": "Baseline: CQT-Diff+ pretrained", "linewidth": 2.5, "zorder": 10},
+        "baseline_cqtdiff_finetuned": {"color": "#666666", "marker": "P", "linestyle": "-.",
+                               "label": "Baseline: CQT-Diff+ fine-tuned no SSL", "linewidth": 2.2, "zorder": 9},
         "clap_cqtdiff":      {"color": "#2196F3", "marker": "o", "linestyle": "-",
                                "label": "CLAP + CQT-Diff+", "linewidth": 1.5, "zorder": 5},
         "clap_maid":         {"color": "#4CAF50", "marker": "s", "linestyle": "-",
@@ -5387,6 +5797,18 @@ else:
         "LSD": {"title": "Log Spectral Distance (LSD)",
                 "ylabel": "LSD (dB)",
                 "note": "↓ lebih rendah = lebih baik"},
+        "LSD_GAP_ONLY": {"title": "Gap-only Log Spectral Distance",
+                "ylabel": "Gap LSD (dB)",
+                "note": "↓ lebih rendah = lebih baik"},
+        "GAP_SI_SDR": {"title": "Gap SI-SDR",
+                "ylabel": "SI-SDR (dB)",
+                "note": "↑ lebih tinggi = lebih baik"},
+        "GAP_SNR": {"title": "Gap SNR",
+                "ylabel": "SNR (dB)",
+                "note": "↑ lebih tinggi = lebih baik"},
+        "GAP_MEL_DISTANCE": {"title": "Gap Mel Spectral Distance",
+                "ylabel": "Mean |Mel dB diff|",
+                "note": "↓ lebih rendah = lebih baik"},
         "FAD": {"title": "Frechet Audio Distance (FAD)",
                 "ylabel": "FAD Score",
                 "note": "↓ lebih rendah = lebih baik"},
@@ -5396,6 +5818,9 @@ else:
         "PEAQ_ODG": {"title": "GstPEAQ Objective Difference Grade",
                      "ylabel": "PEAQ_ODG Score",
                      "note": "↑ mendekati 0 = lebih baik"},
+        "GAP_WINDOW_VISQOL_ODG": {"title": "Gap-window ViSQOL ODG",
+                     "ylabel": "Gap-window VISQOL_ODG",
+                     "note": "↑ mendekati 0 = lebih baik"},
     }
     metrics_info = {k: v for k, v in metrics_info.items() if k in metric_order}
 
@@ -5404,15 +5829,18 @@ else:
         axes = [axes]
     fig.suptitle(
         "Music Audio Inpainting — Baseline vs Hybrid SSL+Diffusion Models\n"
-        f"Gap Durations: {gap_durations} ms",
+        f"Native CQT-Diff: {TARGET_SR} Hz, {SEGMENT_SAMPLES} samples ({SEGMENT_DURATION:.2f}s), "
+        f"gap={EVAL_GAP_POSITION}",
         fontsize=13, fontweight='bold'
     )
 
     for ax, (metric, info) in zip(axes, metrics_info.items()):
         # Plot baseline dan hybrid
         # Urutan plot: hybrid dulu, baseline paling atas (zorder lebih tinggi)
-        plot_order = [m for m in ["clap_cqtdiff", "clap_maid", "audiomae_cqtdiff",
-                                   "audiomae_maid", "baseline_cqtdiff"] if m in available_models]
+        plot_order = [m for m in [
+            "clap_cqtdiff", "audiomae_cqtdiff", "clap_maid", "audiomae_maid",
+            "baseline_cqtdiff_finetuned", "baseline_cqtdiff",
+        ] if m in available_models]
 
         for model_name in plot_order:
             model_data = all_results[all_results["model"] == model_name].sort_values("gap_ms")
@@ -5456,7 +5884,7 @@ else:
     # ============================================================
     if "baseline_cqtdiff" in available_models:
         print("\n" + "="*72)
-        print("📈 IMPROVEMENT HYBRID vs BASELINE (per gap duration)")
+        print("📈 IMPROVEMENT HYBRID vs PRETRAINED BASELINE (per gap duration)")
         print("   Positif = lebih baik dari baseline")
         print("="*72)
 
@@ -5494,6 +5922,37 @@ else:
                     deltas.append(hybrid["PEAQ_ODG"] - bl["PEAQ_ODG"])
 
                 print(f"  {model_name:<25} " + " ".join(f"{d:>+10.4f}" for d in deltas))
+
+    if "baseline_cqtdiff_finetuned" in available_models:
+        print("\n" + "="*78)
+        print("📈 CQT HYBRID vs FINE-TUNED NO-SSL BASELINE (fair SSL contribution check)")
+        print("   Positif = hybrid lebih baik dari baseline fine-tuned tanpa SSL")
+        print("="*78)
+
+        ft_data = all_results[all_results["model"] == "baseline_cqtdiff_finetuned"]
+        fair_metrics = [
+            m for m in ["LSD_GAP_ONLY", "GAP_SI_SDR", "GAP_SNR", "GAP_MEL_DISTANCE", "FAD", "PEAQ_ODG"]
+            if m in all_results.columns
+        ]
+        for gap_ms in gap_durations:
+            ft = ft_data[ft_data["gap_ms"] == gap_ms].iloc[0]
+            print(f"\n  Gap {gap_ms}ms:")
+            print(f"  {'Model':<25} " + " ".join(f"Δ{m:>14}" for m in fair_metrics))
+            print(f"  {'-'*90}")
+            for model_name in ["clap_cqtdiff", "audiomae_cqtdiff"]:
+                if model_name not in available_models:
+                    continue
+                hybrid = all_results[
+                    (all_results["model"] == model_name) &
+                    (all_results["gap_ms"] == gap_ms)
+                ].iloc[0]
+                deltas = []
+                for metric in fair_metrics:
+                    if metric in ["LSD", "LSD_GAP_ONLY", "GAP_LSD", "GAP_MEL_DISTANCE", "FAD"]:
+                        deltas.append(ft[metric] - hybrid[metric])
+                    else:
+                        deltas.append(hybrid[metric] - ft[metric])
+                print(f"  {model_name:<25} " + " ".join(f"{d:>+15.4f}" for d in deltas))
 
     summary_df = update_experiment_summary()
     print(f"\n✅ Semua hasil tersimpan di: {PATHS['results']}")

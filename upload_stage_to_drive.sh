@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Package and upload the full code_v3_final_run_real training stage to Google Drive.
+# Package and upload the full native CQT-Diff training stage to Google Drive.
 #
 # This uses rclone because Google Drive public-editor links are not reliable
 # unauthenticated upload targets for CLI scripts. Configure rclone once:
@@ -12,13 +12,13 @@ set -euo pipefail
 # Optional overrides:
 #   RCLONE_REMOTE=gdrive bash upload_stage_to_drive.sh
 #   MUSIC_INPAINTING_ROOT=/workspace/music_inpainting bash upload_stage_to_drive.sh
-#   PIPELINE_STAGE_NAME=code_v3_final_run_real bash upload_stage_to_drive.sh
+#   PIPELINE_STAGE_NAME=code_v3_final_run_native_cqt bash upload_stage_to_drive.sh
 #   DRIVE_FOLDER_ID=187wcDBfOmjZcVpJ_cu8tmh74EfpwEltp bash upload_stage_to_drive.sh
 
 REPO_DIR="${REPO_DIR:-$(pwd)}"
 PROJECT_ROOT="${PROJECT_ROOT:-$REPO_DIR}"
 MUSIC_ROOT="${MUSIC_INPAINTING_ROOT:-$PROJECT_ROOT/music_inpainting}"
-STAGE_NAME="${PIPELINE_STAGE_NAME:-code_v3_final_run_real}"
+STAGE_NAME="${PIPELINE_STAGE_NAME:-code_v3_final_run_native_cqt}"
 STAGE_DIR="$MUSIC_ROOT/training_stages/$STAGE_NAME"
 DRIVE_FOLDER_ID="${DRIVE_FOLDER_ID:-187wcDBfOmjZcVpJ_cu8tmh74EfpwEltp}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-gdrive}"

@@ -25,10 +25,12 @@ os.environ["CQTDIFF_DIFFUSION_STEPS"] = "35"
 # ============================================================
 INPUT_DIR   = os.path.join(PROJECT_ROOT, "test_recon_this")
 OUTPUT_DIR  = os.path.join(PROJECT_ROOT, "test_outputs", "recon_results")
-TARGET_SR   = 44100
-SEGMENT_LEN = 176400   # 4 detik @ 44100 Hz
-GAP_START   = 50700    # sample mulai silence
-GAP_END     = 125500   # sample akhir silence
+TARGET_SR   = 22050
+SEGMENT_LEN = 65536    # native CQT-Diff effective window (~2.97 detik)
+GAP_MS_CFG  = 1700
+_GAP_SAMPLES = int(round(TARGET_SR * GAP_MS_CFG / 1000))
+GAP_START   = SEGMENT_LEN // 2 - _GAP_SAMPLES // 2
+GAP_END     = GAP_START + _GAP_SAMPLES
 GAP_MS      = int((GAP_END - GAP_START) / TARGET_SR * 1000)  # ~1700 ms
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)

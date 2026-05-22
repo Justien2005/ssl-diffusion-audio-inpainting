@@ -239,6 +239,21 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
             self.native_len = int(self.args.audio_len)
             self.backbone = Unet_CQT(self.args, self.device_ref).to(self.device_ref)
 
+        require_native = os.environ.get("CQTDIFF_REQUIRE_NATIVE_SHAPE", "1").lower() in {"1", "true", "yes", "on"}
+        if require_native and (self.target_sr != self.native_sr or self.target_len != self.native_len):
+            raise RuntimeError(
+                "CQT-Diff adapter harus berjalan pada native checkpoint shape untuk eksperimen final: "
+                f"target_sr={self.target_sr}, target_len={self.target_len}, "
+                f"native_sr={self.native_sr}, native_len={self.native_len}. "
+                "Ubah pipeline ke 22050 Hz dan 65536 samples, atau set "
+                "CQTDIFF_REQUIRE_NATIVE_SHAPE=0 hanya untuk diagnosis non-paper."
+            )
+        print(
+            "CQT-Diff native setup: "
+            f"sr={self.native_sr} Hz, len={self.native_len} samples, "
+            f"duration={self.native_len / self.native_sr:.3f}s"
+        )
+
         # ---- Load EMA weights (lebih baik daripada raw training weights) ----
         weights_path = _find_cqtdiff_weights(self.cqt_diff_dir)
         if weights_path is None:
@@ -528,6 +543,15 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         """
         B = masked_audio.shape[0]
         target_len = masked_audio.shape[-1]
+        if os.environ.get("CQTDIFF_REQUIRE_NATIVE_SHAPE", "1").lower() in {"1", "true", "yes", "on"}:
+            if target_len != self.native_len:
+                raise RuntimeError(
+                    f"Input CQT-Diff harus native_len={self.native_len}, tetapi menerima {target_len}."
+                )
+            if mask.shape[-1] != self.native_len:
+                raise RuntimeError(
+                    f"Mask CQT-Diff harus native_len={self.native_len}, tetapi menerima {mask.shape[-1]}."
+                )
 
         # Cari batas gap di domain asli (target_sr)
         mask_bool = mask[0].bool()
@@ -624,6 +648,12 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         deterministic_sigma: jika True, gunakan set sigma tetap agar validation
         loss stabil dan reproducible antar epoch.
         """
+        if os.environ.get("CQTDIFF_REQUIRE_NATIVE_SHAPE", "1").lower() in {"1", "true", "yes", "on"}:
+            if clean_audio.shape[-1] != self.native_len or masked_audio.shape[-1] != self.native_len:
+                raise RuntimeError(
+                    f"Training CQT-Diff harus native_len={self.native_len}, "
+                    f"clean={clean_audio.shape[-1]}, masked={masked_audio.shape[-1]}."
+                )
         clean_native = self._to_native(clean_audio).float()
         masked_native = self._to_native(masked_audio).float()
         keep_mask = self._target_mask_to_native_keep(mask).to(clean_native.device)

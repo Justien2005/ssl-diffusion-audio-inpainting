@@ -9,14 +9,14 @@ set -euo pipefail
 #
 # Optional overrides:
 #   STAGE_ZIP_URL="https://drive.google.com/..." bash restore_stage_from_drive.sh
-#   STAGE_ZIP_PATH="/tmp/code_v3_final_run_real.zip" bash restore_stage_from_drive.sh
+#   STAGE_ZIP_PATH="/tmp/code_v3_final_run_native_cqt.zip" bash restore_stage_from_drive.sh
 #   MUSIC_INPAINTING_ROOT="/workspace/music_inpainting" bash restore_stage_from_drive.sh
 #   FORCE_OVERWRITE=1 bash restore_stage_from_drive.sh
 
 REPO_DIR="${REPO_DIR:-$(pwd)}"
 PROJECT_ROOT="${PROJECT_ROOT:-$REPO_DIR}"
 MUSIC_ROOT="${MUSIC_INPAINTING_ROOT:-$PROJECT_ROOT/music_inpainting}"
-STAGE_NAME="${PIPELINE_STAGE_NAME:-code_v3_final_run_real}"
+STAGE_NAME="${PIPELINE_STAGE_NAME:-code_v3_final_run_native_cqt}"
 TARGET_STAGE_DIR="$MUSIC_ROOT/training_stages/$STAGE_NAME"
 STAGE_ZIP_URL="${STAGE_ZIP_URL:-https://drive.google.com/file/d/1dO25s3cuKbXbnjJxy680WSr51H62yP2I/view?usp=sharing}"
 STAGE_ZIP_PATH="${STAGE_ZIP_PATH:-$REPO_DIR/${STAGE_NAME}.zip}"
