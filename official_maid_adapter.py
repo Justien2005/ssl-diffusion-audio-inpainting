@@ -297,6 +297,11 @@ class DDPMMidi2PerformanceDecoder(nn.Module):
             # per-frame (B, T, feature_dim) → per-frame bias
             bias = self.condition_to_mel(conditioning.float())          # (B, T, n_mels)
             bias = torch.tanh(bias).permute(0, 2, 1)                   # (B, n_mels, T)
+            target_frames = masked_mel_norm.shape[-1]
+            if bias.shape[-1] < target_frames:
+                bias = F.pad(bias, (0, target_frames - bias.shape[-1]), value=0.0)
+            elif bias.shape[-1] > target_frames:
+                bias = bias[..., :target_frames]
         return torch.clamp(cond + 0.25 * bias.unsqueeze(1), min=-1.0, max=1.0)
 
     def _pad_frames_for_unet(self, mel_norm):
