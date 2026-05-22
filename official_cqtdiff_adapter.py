@@ -229,7 +229,7 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         self.target_len = int(segment_samples)
         self.gap_durations_ms = list(gap_durations_ms)
         self.cqt_diff_dir = os.path.abspath(cqt_diff_dir)
-        self.architecture_name = "ssl_conditioned_cqtdiff_v1"
+        self.architecture_name = "ssl_conditioned_cqtdiff_v2_balanced_gap_loss"
 
         with _prepend_path(self.cqt_diff_dir):
             from src.models.unet_cqt import Unet_CQT
@@ -653,11 +653,13 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
         denoised = self.diff_params.denoiser(x_noisy, denoiser_model, sigma.squeeze(1))
         denoised = keep_mask * masked_native + gap_mask * denoised
 
-        gap_bool = gap_mask.bool()
-        gap_loss = F.l1_loss(denoised[gap_bool], clean_native[gap_bool])
-        full_loss = F.l1_loss(denoised, clean_native)
-
         denom = gap_mask.sum(dim=1).clamp_min(1.0)
+        # Balance per sample, not per gap sample. Otherwise long gaps dominate
+        # the gradient: 1700ms contributes ~17x more elements than 100ms.
+        per_sample_gap_l1 = ((denoised - clean_native).abs() * gap_mask).sum(dim=1) / denom
+        gap_loss = per_sample_gap_l1.mean()
+        full_loss = (denoised - clean_native).abs().mean(dim=1).mean()
+
         pred_rms = torch.sqrt(((denoised * gap_mask).pow(2).sum(dim=1) / denom).clamp_min(1e-10))
         target_rms = torch.sqrt(((clean_native * gap_mask).pow(2).sum(dim=1) / denom).clamp_min(1e-10))
         energy_loss = F.l1_loss(torch.log(pred_rms + 1e-5), torch.log(target_rms + 1e-5))

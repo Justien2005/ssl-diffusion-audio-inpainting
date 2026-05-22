@@ -1459,6 +1459,9 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
         if use_gpu_metrics:
             try:
                 lsd_scores = compute_lsd_batch_gpu(original_audios, recon_audios, gap_ms, sr)
+                lsd_gap_only_scores = compute_lsd_batch_gpu(
+                    original_audios, recon_audios, gap_ms, sr, frame_pad=0
+                )
                 if EVAL_VISQOL_BACKEND in {"fast_gpu", "gpu", "nsim"}:
                     visqol_odg_scores = compute_nsim_odg_batch_gpu(original_audios, recon_audios, sr)
                 else:
@@ -1466,6 +1469,7 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
             except Exception as exc:
                 print(f"⚠️ Fast GPU evaluation gagal ({exc}); fallback ke CPU metric path.")
                 lsd_scores = []
+                lsd_gap_only_scores = []
                 visqol_odg_scores = []
                 for orig, recon in zip(original_audios, recon_audios):
                     center = len(orig) // 2
@@ -1474,9 +1478,13 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
 
                     lsd_scores.append(compute_lsd(orig, recon, sr,
                                                   gap_start=gap_start, gap_end=gap_end))
+                    lsd_gap_only_scores.append(compute_lsd(
+                        orig, recon, sr, gap_start=gap_start, gap_end=gap_end, frame_pad=0
+                    ))
                     visqol_odg_scores.append(compute_visqol_odg(orig, recon, sr))
         else:
             lsd_scores = []
+            lsd_gap_only_scores = []
             visqol_odg_scores = []
             for orig, recon in zip(original_audios, recon_audios):
                 center = len(orig) // 2
@@ -1485,6 +1493,9 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
 
                 lsd_scores.append(compute_lsd(orig, recon, sr,
                                               gap_start=gap_start, gap_end=gap_end))
+                lsd_gap_only_scores.append(compute_lsd(
+                    orig, recon, sr, gap_start=gap_start, gap_end=gap_end, frame_pad=0
+                ))
                 visqol_odg_scores.append(compute_visqol_odg(orig, recon, sr))
 
         peaq_odg_scores = []
@@ -1496,6 +1507,7 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
         results.append({
             "gap_ms": gap_ms,
             "LSD": round(np.mean(lsd_scores), 4),
+            "LSD_GAP_ONLY": round(np.mean(lsd_gap_only_scores), 4),
             "FAD": round(fad_score, 4),
             "VISQOL_ODG": round(np.mean(visqol_odg_scores), 4),
             "PEAQ_ODG": round(np.mean(peaq_odg_scores), 4) if peaq_odg_scores else np.nan,
