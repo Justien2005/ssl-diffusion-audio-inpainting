@@ -246,10 +246,12 @@ class OfficialCQTDiffHybridDecoder(nn.Module):
                 "Checkpoint CQT-Diff+ asli belum ditemukan. Jalankan "
                 "external/CQTdiff/download_weights_and_examples.sh atau set CQTDIFF_WEIGHTS."
             )
+        self.official_weights_path = os.path.abspath(weights_path)
 
         ema_state, weight_type = _load_ema_weights_from_checkpoint(
             weights_path, self.device_ref, live_model=self.backbone
         )
+        self.official_weights_type = weight_type
         msg = self.backbone.load_state_dict(ema_state, strict=False)
         print(f"CQT-Diff+ {weight_type} weights loaded: {weights_path}")
         print(f"CQT-Diff+ load_state_dict: {msg}")

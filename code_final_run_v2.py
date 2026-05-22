@@ -477,8 +477,10 @@ DATASET_FRACTION = 0.5
 
 # Jumlah sampel evaluasi (bisa override via env var untuk test run cepat)
 N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "10"))
-EVAL_REUSE_RECONSTRUCTIONS = os.environ.get("EVAL_REUSE_RECONSTRUCTIONS", "1").lower() in {"1", "true", "yes", "on"}
-EVAL_CLEAR_RECONSTRUCTIONS = os.environ.get("EVAL_CLEAR_RECONSTRUCTIONS", "0").lower() in {"1", "true", "yes", "on"}
+# Eval final harus fresh by default: hapus WAV rekonstruksi lama sebelum inpaint,
+# lalu generate ulang semua output untuk checkpoint/model yang sedang diload.
+EVAL_REUSE_RECONSTRUCTIONS = os.environ.get("EVAL_REUSE_RECONSTRUCTIONS", "0").lower() in {"1", "true", "yes", "on"}
+EVAL_CLEAR_RECONSTRUCTIONS = os.environ.get("EVAL_CLEAR_RECONSTRUCTIONS", "1").lower() in {"1", "true", "yes", "on"}
 
 # Jumlah segmen maksimal per lagu
 MAX_SEGMENTS_PER_FILE = 5
@@ -995,8 +997,10 @@ import librosa
 import pandas as pd
 
 _VISQOL_FALLBACK_WARNED = False
-EVAL_USE_GPU = False
-EVAL_VISQOL_BACKEND = "visqol"
+# Aktifkan akselerasi GPU untuk metrik yang sudah punya implementasi torch.
+# FAD/ViSQOL/GstPEAQ tetap memakai backend resmi CPU agar definisi metrik tidak berubah.
+EVAL_USE_GPU = os.environ.get("EVAL_USE_GPU", "1").lower() in {"1", "true", "yes", "on"}
+EVAL_VISQOL_BACKEND = os.environ.get("EVAL_VISQOL_BACKEND", "visqol")
 EVAL_USE_GSTPEAQ = os.environ.get("EVAL_USE_GSTPEAQ", "1").lower() in {"1", "true", "yes"}
 GSTPEAQ_DIR = os.environ.get("GSTPEAQ_DIR", os.path.join(EXTERNAL_DIR, "gstpeaq"))
 GSTPEAQ_BIN = os.environ.get("GSTPEAQ_BIN", "")
@@ -1440,7 +1444,10 @@ def evaluate_all_gaps(original_audios: list, reconstructed_dict: dict, sr: int =
     results = []
     use_gpu_metrics = _eval_device().type == "cuda"
     if use_gpu_metrics:
-        print(f"  Fast GPU evaluation aktif: LSD/VISQOL backend GPU, FAD tetap VGGish CPU, VISQOL_ODG backend={EVAL_VISQOL_BACKEND}")
+        print(
+            "  Fast GPU evaluation aktif: LSD batch di CUDA; "
+            f"VISQOL_ODG backend={EVAL_VISQOL_BACKEND}; FAD tetap VGGish CPU."
+        )
 
     for gap_ms, recon_audios in reconstructed_dict.items():
         print(f"  Evaluating gap {gap_ms}ms...")
@@ -2221,6 +2228,52 @@ def reconstructed_output_path(model_name: str, gap_ms: int, sample_index: int):
     return os.path.join(out_dir, filename)
 
 
+CURRENT_RECONSTRUCTION_CACHE_TAG = None
+EVAL_CACHE_CODE_VERSION = "eval_cache_v2_checkpoint_aware"
+
+
+def _file_fingerprint(path: str):
+    if not path or not os.path.exists(path):
+        return None
+    st = os.stat(path)
+    return {
+        "path": os.path.abspath(path),
+        "size": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+    }
+
+
+def _decoder_cache_identity(decoder):
+    return {
+        "class": decoder.__class__.__name__,
+        "architecture": getattr(decoder, "architecture_name", None),
+        "official_weights_path": getattr(decoder, "official_weights_path", None),
+        "official_weights_type": getattr(decoder, "official_weights_type", None),
+        "official_weights_fingerprint": _file_fingerprint(getattr(decoder, "official_weights_path", None)),
+    }
+
+
+def set_reconstruction_cache_context(model_name: str, decoder, checkpoint_path: str = None):
+    """Cache tag supaya evaluator tidak memakai WAV lama dari checkpoint/arsitektur berbeda."""
+    global CURRENT_RECONSTRUCTION_CACHE_TAG
+    context = {
+        "version": EVAL_CACHE_CODE_VERSION,
+        "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
+        "model": model_name,
+        "checkpoint": _file_fingerprint(checkpoint_path),
+        "decoder": _decoder_cache_identity(decoder),
+        "target_sr": int(TARGET_SR),
+        "segment_samples": int(SEGMENT_SAMPLES),
+        "gap_durations_ms": list(GAP_DURATIONS_MS),
+    }
+    CURRENT_RECONSTRUCTION_CACHE_TAG = json.dumps(context, sort_keys=True)
+    return CURRENT_RECONSTRUCTION_CACHE_TAG
+
+
+def _reconstructed_sidecar_path(path: str):
+    return f"{path}.meta.json"
+
+
 def save_reconstructed_output(model_name: str, gap_ms: int, sample_index: int,
                               reconstructed, sr: int = TARGET_SR):
     """Simpan final reconstructed waveform yang dipakai oleh metrik evaluasi."""
@@ -2234,6 +2287,17 @@ def save_reconstructed_output(model_name: str, gap_ms: int, sample_index: int,
     audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
 
     sf.write(path, audio, sr, subtype="FLOAT")
+    sidecar = {
+        "model": model_name,
+        "gap_ms": int(gap_ms),
+        "sample_index": int(sample_index),
+        "sr": int(sr),
+        "n_samples": int(len(audio)),
+        "cache_tag": CURRENT_RECONSTRUCTION_CACHE_TAG,
+        "saved_at": pd.Timestamp.now().isoformat(),
+    }
+    with open(_reconstructed_sidecar_path(path), "w", encoding="utf-8") as f:
+        json.dump(sidecar, f, indent=2)
     return path
 
 
@@ -2245,6 +2309,22 @@ def load_reconstructed_output_if_available(model_name: str, gap_ms: int, sample_
         return None, path
 
     try:
+        if CURRENT_RECONSTRUCTION_CACHE_TAG is not None:
+            sidecar_path = _reconstructed_sidecar_path(path)
+            if not os.path.exists(sidecar_path):
+                print(f"    Reconstruct cache ignored (missing cache metadata): {path}")
+                return None, path
+            with open(sidecar_path, "r", encoding="utf-8") as f:
+                sidecar = json.load(f)
+            if sidecar.get("cache_tag") != CURRENT_RECONSTRUCTION_CACHE_TAG:
+                print(f"    Reconstruct cache ignored (checkpoint/model cache tag mismatch): {path}")
+                return None, path
+            if sidecar.get("model") != model_name or int(sidecar.get("gap_ms", -1)) != int(gap_ms):
+                print(f"    Reconstruct cache ignored (model/gap metadata mismatch): {path}")
+                return None, path
+            if int(sidecar.get("sample_index", -1)) != int(sample_index):
+                print(f"    Reconstruct cache ignored (sample metadata mismatch): {path}")
+                return None, path
         info = sf.info(path)
         if int(info.samplerate) != int(sr):
             print(f"    Reconstruct cache ignored (SR mismatch): {path}")
@@ -2294,6 +2374,100 @@ def save_reconstruction_manifest(model_name: str, rows: list):
     pd.DataFrame(rows).to_csv(manifest_path, index=False)
     print(f"💾 Reconstructed output manifest: {manifest_path}")
     return manifest_path
+
+
+def validate_masked_gap_alignment(original, masked, mask, gap_ms, sr=TARGET_SR, atol=2e-4):
+    """Fail-fast jika file masked tidak memiliki gap di posisi yang sama dengan mask evaluasi."""
+    original = np.asarray(original, dtype=np.float32)
+    masked = np.asarray(masked, dtype=np.float32)
+    mask = np.asarray(mask, dtype=bool)
+    n = min(len(original), len(masked), len(mask))
+    original = original[:n]
+    masked = masked[:n]
+    mask = mask[:n]
+
+    gap_samples = int(round(sr * gap_ms / 1000))
+    expected_start = n // 2 - gap_samples // 2
+    expected_end = expected_start + gap_samples
+    gap_idx = np.flatnonzero(mask)
+    if len(gap_idx) != gap_samples or gap_idx[0] != expected_start or gap_idx[-1] + 1 != expected_end:
+        raise RuntimeError(
+            f"Mask gap tidak sesuai untuk {gap_ms}ms: expected=({expected_start},{expected_end}), "
+            f"actual=({gap_idx[0] if len(gap_idx) else None},{gap_idx[-1] + 1 if len(gap_idx) else None}), "
+            f"gap_samples={len(gap_idx)}"
+        )
+
+    gap_abs = float(np.max(np.abs(masked[mask]))) if np.any(mask) else 0.0
+    known_abs = float(np.max(np.abs(masked[~mask] - original[~mask]))) if np.any(~mask) else 0.0
+    if gap_abs > atol:
+        raise RuntimeError(f"Masked audio gap {gap_ms}ms tidak nol penuh: max_abs_gap={gap_abs:.6g}")
+    if known_abs > atol:
+        raise RuntimeError(f"Masked audio non-gap berubah dari original: max_abs_known_diff={known_abs:.6g}")
+
+    return {
+        "gap_start": int(expected_start),
+        "gap_end": int(expected_end),
+        "gap_samples": int(gap_samples),
+        "masked_gap_max_abs": gap_abs,
+        "known_region_max_abs_diff": known_abs,
+    }
+
+
+def _gap_region_stats(original, reconstructed, gap_ms, sr=TARGET_SR):
+    n = min(len(original), len(reconstructed))
+    original = np.asarray(original[:n], dtype=np.float32)
+    reconstructed = np.asarray(reconstructed[:n], dtype=np.float32)
+    gap_samples = int(round(sr * gap_ms / 1000))
+    gap_start = n // 2 - gap_samples // 2
+    gap_end = gap_start + gap_samples
+    ref_gap = original[gap_start:gap_end]
+    rec_gap = reconstructed[gap_start:gap_end]
+    eps = 1e-12
+    ref_rms = float(np.sqrt(np.mean(ref_gap ** 2) + eps))
+    rec_rms = float(np.sqrt(np.mean(rec_gap ** 2) + eps))
+    return {
+        "ref_gap_rms": ref_rms,
+        "recon_gap_rms": rec_rms,
+        "gap_gain_db": float(20.0 * np.log10((rec_rms + eps) / (ref_rms + eps))),
+        "ref_full_rms": float(np.sqrt(np.mean(original ** 2) + eps)),
+        "recon_full_rms": float(np.sqrt(np.mean(reconstructed ** 2) + eps)),
+        "gap_peak_abs": float(np.max(np.abs(rec_gap))) if len(rec_gap) else 0.0,
+        "gap_zero_fraction": float(np.mean(np.abs(rec_gap) < 1e-6)) if len(rec_gap) else 1.0,
+    }
+
+
+def save_reconstruction_diagnostics(model_name: str, original_audios: list, reconstructed_dict: dict,
+                                    alignment_rows: list = None, conditioning_rows: list = None):
+    """Simpan diagnostik gain/posisi/conditioning untuk audit hasil evaluasi."""
+    out_dir = os.path.join(PATHS["outputs"], model_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    rows = []
+    for gap_ms, recon_audios in reconstructed_dict.items():
+        per_sample = [
+            _gap_region_stats(orig, recon, gap_ms, TARGET_SR)
+            for orig, recon in zip(original_audios, recon_audios)
+        ]
+        row = {"model": model_name, "gap_ms": int(gap_ms), "n_samples": int(len(per_sample))}
+        for key in per_sample[0].keys():
+            values = np.asarray([item[key] for item in per_sample], dtype=np.float64)
+            row[f"{key}_mean"] = float(np.mean(values))
+            row[f"{key}_std"] = float(np.std(values))
+        rows.append(row)
+
+    gain_path = os.path.join(out_dir, "diagnostics_gain_by_gap.csv")
+    pd.DataFrame(rows).to_csv(gain_path, index=False)
+    print(f"💾 Gain diagnostics: {gain_path}")
+
+    if alignment_rows:
+        align_path = os.path.join(out_dir, "diagnostics_gap_alignment.csv")
+        pd.DataFrame(alignment_rows).to_csv(align_path, index=False)
+        print(f"💾 Gap alignment diagnostics: {align_path}")
+
+    if conditioning_rows:
+        cond_path = os.path.join(out_dir, "diagnostics_conditioning.csv")
+        pd.DataFrame(conditioning_rows).to_csv(cond_path, index=False)
+        print(f"💾 Conditioning diagnostics: {cond_path}")
 
 
 def _read_audio_float32(path):
@@ -3980,14 +4154,22 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
     """
     evaluation_start = time.perf_counter()
     model_name = model_name_from_label(model_label)
+    cache_tag = set_reconstruction_cache_context(
+        model_name,
+        decoder,
+        checkpoint_path=get_model_checkpoint_path(model_name) if hybrid_checkpoint_exists(model_name) else None,
+    )
     prepare_reconstructed_outputs(model_name, clear=EVAL_CLEAR_RECONSTRUCTIONS)
     output_manifest_rows = []
+    alignment_rows = []
+    conditioning_rows = []
     original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
     reconstructed_dict = {}
     reused_count = 0
     generated_count = 0
 
     print(f"\n🎵 Menjalankan inpainting {model_label}...")
+    print(f"  Cache tag aktif: {cache_tag[:96]}...")
     if EVAL_REUSE_RECONSTRUCTIONS:
         print("  Resume rekonstruksi aktif: WAV yang sudah ada akan dipakai ulang.")
         summarize_reconstruction_cache(model_name, n_eval_samples)
@@ -4012,9 +4194,14 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                 with torch.inference_mode():
                     # Encode masked audio pakai SSL encoder
                     encoder_latent = encoder_fn(masked_audio)
+                    if not torch.isfinite(encoder_latent).all():
+                        raise RuntimeError(f"Encoder latent {model_name} mengandung NaN/Inf pada gap={gap_ms}, sample={index}.")
 
                     masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
                     mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
+                    align = validate_masked_gap_alignment(orig_audio, masked_audio, mask, gap_ms)
+                    align.update({"model": model_name, "gap_ms": int(gap_ms), "sample_index": int(index)})
+                    alignment_rows.append(align)
                     mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
                     has_diffusion = hasattr(decoder, "_inpaint_diffusion")
@@ -4028,6 +4215,26 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                         # setelah baseline diffusion selesai.
                         decoder_features = decoder.get_features(masked_tensor, mask_tensor)
                         conditioned_features = film_layer(encoder_latent.float(), decoder_features)
+                        if not torch.isfinite(decoder_features).all():
+                            raise RuntimeError(f"Decoder features {model_name} mengandung NaN/Inf pada gap={gap_ms}, sample={index}.")
+                        if not torch.isfinite(conditioned_features).all():
+                            raise RuntimeError(f"FiLM conditioning {model_name} mengandung NaN/Inf pada gap={gap_ms}, sample={index}.")
+                        conditioning_rows.append({
+                            "model": model_name,
+                            "gap_ms": int(gap_ms),
+                            "sample_index": int(index),
+                            "encoder_shape": tuple(encoder_latent.shape),
+                            "decoder_features_shape": tuple(decoder_features.shape),
+                            "conditioned_features_shape": tuple(conditioned_features.shape),
+                            "encoder_min": float(encoder_latent.float().min().item()),
+                            "encoder_max": float(encoder_latent.float().max().item()),
+                            "encoder_mean": float(encoder_latent.float().mean().item()),
+                            "encoder_std": float(encoder_latent.float().std(unbiased=False).item()),
+                            "conditioning_min": float(conditioned_features.float().min().item()),
+                            "conditioning_max": float(conditioned_features.float().max().item()),
+                            "conditioning_mean": float(conditioned_features.float().mean().item()),
+                            "conditioning_std": float(conditioned_features.float().std(unbiased=False).item()),
+                        })
 
                         reconstructed = decoder.inpaint(
                             masked_tensor,
@@ -4038,6 +4245,26 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
                         # MAID: diffusion handled internally by decoder.inpaint()
                         decoder_features = decoder.get_features(masked_tensor, mask_tensor)
                         conditioned_features = film_layer(encoder_latent.float(), decoder_features)
+                        if not torch.isfinite(decoder_features).all():
+                            raise RuntimeError(f"Decoder features {model_name} mengandung NaN/Inf pada gap={gap_ms}, sample={index}.")
+                        if not torch.isfinite(conditioned_features).all():
+                            raise RuntimeError(f"FiLM conditioning {model_name} mengandung NaN/Inf pada gap={gap_ms}, sample={index}.")
+                        conditioning_rows.append({
+                            "model": model_name,
+                            "gap_ms": int(gap_ms),
+                            "sample_index": int(index),
+                            "encoder_shape": tuple(encoder_latent.shape),
+                            "decoder_features_shape": tuple(decoder_features.shape),
+                            "conditioned_features_shape": tuple(conditioned_features.shape),
+                            "encoder_min": float(encoder_latent.float().min().item()),
+                            "encoder_max": float(encoder_latent.float().max().item()),
+                            "encoder_mean": float(encoder_latent.float().mean().item()),
+                            "encoder_std": float(encoder_latent.float().std(unbiased=False).item()),
+                            "conditioning_min": float(conditioned_features.float().min().item()),
+                            "conditioning_max": float(conditioned_features.float().max().item()),
+                            "conditioning_mean": float(conditioned_features.float().mean().item()),
+                            "conditioning_std": float(conditioned_features.float().std(unbiased=False).item()),
+                        })
 
                         reconstructed = decoder.inpaint(
                             masked_tensor,
@@ -4066,6 +4293,7 @@ def run_hybrid_inpainting_evaluation(model_label: str, encoder_fn, decoder, film
         reconstructed_dict[gap_ms] = reconstructed_list
 
     save_reconstruction_manifest(model_name, output_manifest_rows)
+    save_reconstruction_diagnostics(model_name, original_audios, reconstructed_dict, alignment_rows, conditioning_rows)
     print(f"  Rekonstruksi reused/generated: {reused_count}/{generated_count}")
     results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
     record_evaluation_timing(model_name, time.perf_counter() - evaluation_start, n_eval_samples)
@@ -4079,14 +4307,17 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
     """
     baseline_eval_start = time.perf_counter()
     model_name = "baseline_cqtdiff"
+    cache_tag = set_reconstruction_cache_context(model_name, decoder, checkpoint_path=None)
     prepare_reconstructed_outputs(model_name, clear=EVAL_CLEAR_RECONSTRUCTIONS)
     output_manifest_rows = []
+    alignment_rows = []
     original_audios, masked_by_gap = load_preprocessed_data(n_eval_samples)
     reconstructed_dict = {}
     reused_count = 0
     generated_count = 0
 
     print("\n🎵 Menjalankan baseline CQT-Diff+ (tanpa SSL encoder)...")
+    print(f"  Cache tag aktif: {cache_tag[:96]}...")
     if EVAL_REUSE_RECONSTRUCTIONS:
         print("  Resume rekonstruksi aktif: WAV yang sudah ada akan dipakai ulang.")
         summarize_reconstruction_cache(model_name, n_eval_samples)
@@ -4111,6 +4342,9 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
                 with torch.inference_mode():
                     masked_tensor = torch.from_numpy(masked_audio).float().unsqueeze(0).to(device)
                     mask, gap_start, gap_end = make_gap_mask(len(masked_audio), gap_ms)
+                    align = validate_masked_gap_alignment(orig_audio, masked_audio, mask, gap_ms)
+                    align.update({"model": model_name, "gap_ms": int(gap_ms), "sample_index": int(i)})
+                    alignment_rows.append(align)
                     mask_tensor = torch.from_numpy(mask).unsqueeze(0).to(device)
 
                     # Baseline: conditioning=None
@@ -4137,6 +4371,7 @@ def run_baseline_inpainting_evaluation(decoder, device, n_eval_samples: int = 50
         reconstructed_dict[gap_ms] = reconstructed_list
 
     save_reconstruction_manifest(model_name, output_manifest_rows)
+    save_reconstruction_diagnostics(model_name, original_audios, reconstructed_dict, alignment_rows, None)
     print(f"  Rekonstruksi reused/generated: {reused_count}/{generated_count}")
     results_df = evaluate_all_gaps(original_audios, reconstructed_dict, TARGET_SR)
     record_evaluation_timing(model_name, time.perf_counter() - baseline_eval_start, n_eval_samples)
@@ -4384,9 +4619,9 @@ else:
 
 MODEL_NAME = "baseline_cqtdiff_finetuned"
 FORCE_RETRAIN = True
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | model: {MODEL_NAME} | "
@@ -4543,10 +4778,10 @@ else:
 MODEL_NAME = "clap_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4673,10 +4908,10 @@ else:
 MODEL_NAME = "clap_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4803,10 +5038,10 @@ else:
 MODEL_NAME = "audiomae_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -4933,9 +5168,9 @@ else:
 MODEL_NAME = "audiomae_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 10
+NUM_EPOCHS = 5
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
