@@ -1115,6 +1115,8 @@ _VISQOL_FALLBACK_WARNED = False
 EVAL_USE_GPU = os.environ.get("EVAL_USE_GPU", "1").lower() in {"1", "true", "yes", "on"}
 EVAL_VISQOL_BACKEND = os.environ.get("EVAL_VISQOL_BACKEND", "visqol")
 EVAL_USE_GSTPEAQ = os.environ.get("EVAL_USE_GSTPEAQ", "1").lower() in {"1", "true", "yes"}
+FAD_USE_VGGISH_PCA = os.environ.get("FAD_USE_VGGISH_PCA", "0").lower() in {"1", "true", "yes", "on"}
+FAD_DEBUG_STATS = os.environ.get("FAD_DEBUG_STATS", "1").lower() in {"1", "true", "yes", "on"}
 GSTPEAQ_DIR = os.environ.get("GSTPEAQ_DIR", os.path.join(EXTERNAL_DIR, "gstpeaq"))
 GSTPEAQ_BIN = os.environ.get("GSTPEAQ_BIN", "")
 GSTPEAQ_PLUGIN = os.environ.get("GSTPEAQ_PLUGIN", "")
@@ -1234,6 +1236,7 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
     """
     features = []
     try:
+        import inspect
         import torch as _torch
         import torchvggish
         try:
@@ -1242,7 +1245,30 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
             _vggish_input = getattr(torchvggish, "vggish_input", None)
 
         _device = _torch.device("cpu")
-        _vggish = torchvggish.vggish().to(_device).eval()
+        vggish_kwargs = {}
+        try:
+            sig = inspect.signature(torchvggish.vggish)
+            if "postprocess" in sig.parameters:
+                # FAD libraries commonly use raw VGGish embeddings
+                # (equivalent to use_pca=False). The PCA+8-bit YouTube-8M
+                # postprocess space has a 0..255 scale and can inflate FAD
+                # into tens of thousands for otherwise reasonable audio.
+                vggish_kwargs["postprocess"] = bool(FAD_USE_VGGISH_PCA)
+        except (TypeError, ValueError):
+            pass
+
+        _vggish = torchvggish.vggish(**vggish_kwargs).to(_device).eval()
+        postprocess_active = bool(vggish_kwargs.get("postprocess", False))
+        postprocess_active = postprocess_active or bool(getattr(_vggish, "postprocess", False))
+        postprocess_active = postprocess_active or bool(getattr(_vggish, "pproc", None) is not None)
+        if postprocess_active and not FAD_USE_VGGISH_PCA:
+            raise RuntimeError(
+                "torchvggish tetap mengaktifkan VGGish post-processing walau "
+                "FAD_USE_VGGISH_PCA=0. Ini berpotensi membuat skala FAD meledak. "
+                "Gunakan package torchvggish yang mendukung vggish(postprocess=False), "
+                "atau set FAD_USE_VGGISH_PCA=1 hanya jika memang ingin FAD pada "
+                "embedding PCA+8-bit legacy."
+            )
         if _vggish_input is None:
             raise RuntimeError("torchvggish.vggish_input tidak tersedia")
 
@@ -1262,10 +1288,14 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
                     raise RuntimeError("VGGish tidak menghasilkan example untuk salah satu audio.")
                 examples = _torch.as_tensor(examples, dtype=_torch.float32, device=_device)
                 emb = _vggish(examples)
-                features.append(emb.detach().cpu().numpy())
+                emb_np = emb.detach().cpu().numpy()
+                if emb_np.dtype == np.uint8:
+                    emb_np = emb_np.astype(np.float32)
+                features.append(emb_np)
     except Exception as exc:
         raise RuntimeError(
-            "FAD wajib memakai VGGish CPU. Install/konfigurasi torchvggish sebelum evaluasi FAD."
+            "FAD wajib memakai VGGish CPU. Install/konfigurasi torchvggish sebelum evaluasi FAD. "
+            f"Detail: {exc}"
         ) from exc
 
     features = np.concatenate(features, axis=0).astype(np.float64, copy=False)
@@ -1273,6 +1303,12 @@ def extract_fad_features(audio_list: list, sr: int = TARGET_SR):
         raise RuntimeError(f"Embedding VGGish FAD tidak cukup: shape={features.shape}")
     if not np.isfinite(features).all():
         raise RuntimeError("Embedding VGGish FAD berisi NaN/Inf.")
+    if FAD_DEBUG_STATS:
+        print(
+            "    FAD VGGish features: "
+            f"shape={features.shape}, mean={features.mean():.4f}, std={features.std():.4f}, "
+            f"min={features.min():.4f}, max={features.max():.4f}"
+        )
     return features
 
 
@@ -1308,6 +1344,14 @@ def compute_fad(original_audios: list, reconstructed_audios: list, sr: int = TAR
 
     diff = mu1 - mu2
     mean_diff = np.dot(diff, diff)
+    if FAD_DEBUG_STATS:
+        if len(orig_features) <= d or len(recon_features) <= d:
+            print(
+                "    ⚠️ FAD sample count lebih kecil/sama dari dimensi embedding "
+                f"(orig={len(orig_features)}, recon={len(recon_features)}, dim={d}); "
+                "covariance FAD bisa sangat noisy. Naikkan N_EVAL_SAMPLES untuk hasil final."
+            )
+        print(f"    FAD mean term: {mean_diff:.4f}")
 
     def _psd_matrix_sqrt(mat, eps=1e-10):
         mat = (mat + mat.T) * 0.5
