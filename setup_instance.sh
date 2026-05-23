@@ -84,8 +84,11 @@ pip install -r requirements.txt
 echo "==> Re-confirming CUDA PyTorch stack after requirements"
 pip install --force-reinstall torch torchvision torchaudio --index-url "$TORCH_CUDA_INDEX"
 python -m pip install --force-reinstall "setuptools<82"
+python -m pip install --force-reinstall "numpy==1.26.4"
 python - <<'PY'
+import numpy as np
 import torch
+print("numpy:", np.__version__)
 print("torch:", torch.__version__)
 print("torch cuda:", torch.version.cuda)
 print("cuda available:", torch.cuda.is_available())

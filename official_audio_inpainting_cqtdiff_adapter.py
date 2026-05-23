@@ -30,6 +30,30 @@ def _prepend_path(path):
                 pass
 
 
+@contextmanager
+def _numpy_clip_int_inf_compat():
+    """Compatibility for cqt_nsgt_pytorch 0.0.8 under NumPy 2.x."""
+    original_clip = np.clip
+
+    def clip_compat(a, a_min=None, a_max=None, out=None, **kwargs):
+        if out is not None and np.issubdtype(np.asarray(out).dtype, np.integer):
+            try:
+                max_is_inf = bool(np.all(np.isinf(a_max)))
+            except TypeError:
+                max_is_inf = False
+            if max_is_inf:
+                result = original_clip(a, a_min, None, **kwargs)
+                np.copyto(out, np.asarray(result, dtype=out.dtype), casting="unsafe")
+                return out
+        return original_clip(a, a_min, a_max, out=out, **kwargs)
+
+    np.clip = clip_compat
+    try:
+        yield
+    finally:
+        np.clip = original_clip
+
+
 def _load_audio_inpainting_config(repo_dir, device):
     conf_dir = os.path.join(repo_dir, "conf")
     network_cfg = os.environ.get(
@@ -131,9 +155,10 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
             self.args = _load_audio_inpainting_config(self.audio_inpainting_dir, self.device_ref)
             self.native_sr = int(self.args.exp.sample_rate)
             self.native_len = int(self.args.exp.audio_len)
-            self.backbone = Unet_CQT_oct_with_attention(self.args, self.device_ref).to(
-                self.device_ref
-            )
+            with _numpy_clip_int_inf_compat():
+                self.backbone = Unet_CQT_oct_with_attention(self.args, self.device_ref).to(
+                    self.device_ref
+                )
 
         require_native = os.environ.get("CQTDIFF_REQUIRE_NATIVE_SHAPE", "1").lower() in {
             "1",
