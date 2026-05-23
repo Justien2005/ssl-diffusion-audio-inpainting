@@ -470,7 +470,7 @@ import time
 # ============================================================
 
 # Set True jika preprocessing sudah pernah dijalankan
-SKIP_IF_EXISTS = True
+SKIP_IF_EXISTS = False
 
 # Seed tetap untuk semua sampling dataset agar eksperimen reproducible
 DATASET_RANDOM_SEED = 42
