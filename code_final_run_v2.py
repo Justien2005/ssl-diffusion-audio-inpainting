@@ -153,6 +153,9 @@ for pkg in packages:
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 EXTERNAL_DIR = os.path.join(PROJECT_ROOT, "external")
 CQT_DIFF_DIR = os.environ.get("CQT_DIFF_DIR", os.path.join(EXTERNAL_DIR, "CQTdiff"))
+AUDIO_INPAINTING_DIR = os.environ.get(
+    "AUDIO_INPAINTING_DIR", os.path.join(EXTERNAL_DIR, "audio-inpainting-diffusion")
+)
 AUDIO_MAE_DIR = os.environ.get("AUDIO_MAE_DIR", os.path.join(EXTERNAL_DIR, "AudioMAE"))
 MIDI2PERFORMANCE_DIR = os.environ.get(
     "MIDI2PERFORMANCE_DIR",
@@ -168,10 +171,20 @@ else:
         ["git", "clone", "https://github.com/eloimoliner/CQTdiff.git", CQT_DIFF_DIR],
         check=False
     )
+if os.path.exists(os.path.join(AUDIO_INPAINTING_DIR, ".git")):
+    print(f"  Audio-inpainting CQTdiff+ repository sudah ada: {AUDIO_INPAINTING_DIR}")
+else:
+    print(f"  Cloning Audio-inpainting CQTdiff+ repository ke {AUDIO_INPAINTING_DIR}...")
+    subprocess.run(
+        ["git", "clone", "https://github.com/eloimoliner/audio-inpainting-diffusion.git", AUDIO_INPAINTING_DIR],
+        check=False
+    )
 
 # Tambahkan repo ke Python path agar bisa di-import
 if CQT_DIFF_DIR not in sys.path:
     sys.path.insert(0, CQT_DIFF_DIR)
+if AUDIO_INPAINTING_DIR not in sys.path:
+    sys.path.insert(0, AUDIO_INPAINTING_DIR)
 if os.path.isdir(AUDIO_MAE_DIR) and AUDIO_MAE_DIR not in sys.path:
     sys.path.insert(0, AUDIO_MAE_DIR)
 MIDI2PERFORMANCE_MAIN_DIR = os.path.join(MIDI2PERFORMANCE_DIR, "main")
@@ -197,7 +210,7 @@ print("   Proxy/replika dinonaktifkan; pipeline akan berhenti jika model asli be
 import os
 
 # --- PARAMETER -----------------------------------------------
-PIPELINE_STAGE_NAME = "code_v3_final_run_native_cqt"  # Native CQT-Diff setup: 22.05 kHz, 65536 samples.
+PIPELINE_STAGE_NAME = "code_v4_musicnet_cqtdiffplus_44k"  # Native audio-inpainting CQTdiff+: 44.1 kHz, 184184 samples.
 IS_LOCAL = True   # Vast.ai/local default. Ganti ke False hanya jika menggunakan Google Colab.
 PROJECT_ROOT = os.environ.get("PROJECT_ROOT", os.getcwd())
 BASE_LOCAL_ROOT = os.environ.get("MUSIC_INPAINTING_ROOT", os.path.join(PROJECT_ROOT, "music_inpainting"))
@@ -232,18 +245,20 @@ PATHS = {
 }
 
 # Final thesis guardrail: do not use local proxy/reimplementation models.
-# CQT-Diff+ and MAID need thin adapter modules because their official code does
+# CQTdiff+ and MAID need thin adapter modules because their official code does
 # not expose the exact FiLM-training interface used by this notebook.
 OFFICIAL_MODELS_ONLY = True
-OFFICIAL_CQTDIFF_ADAPTER = os.environ.get("OFFICIAL_CQTDIFF_ADAPTER", "official_cqtdiff_adapter")
+OFFICIAL_CQTDIFF_ADAPTER = os.environ.get(
+    "OFFICIAL_CQTDIFF_ADAPTER", "official_audio_inpainting_cqtdiff_adapter"
+)
 MAID_ADAPTER = os.environ.get("MAID_ADAPTER", "official_maid_adapter")
 
-# Diagnostic experiment: train the official CQT-Diff+ backbone together with
+# Diagnostic experiment: train the official CQTdiff+ backbone together with
 # the adapter reconstruction head. This is heavier, but helps test whether the
 # silent/noisy gap comes from the frozen backbone + small head setup.
 CQTDIFF_TRAIN_BACKBONE_EXPERIMENT = False
 os.environ["CQTDIFF_TRAIN_BACKBONE"] = "1" if CQTDIFF_TRAIN_BACKBONE_EXPERIMENT else "0"
-print(f"CQT-Diff+ train backbone experiment: CQTDIFF_TRAIN_BACKBONE={os.environ['CQTDIFF_TRAIN_BACKBONE']}")
+print(f"MusicNet CQTdiff+ train backbone experiment: CQTDIFF_TRAIN_BACKBONE={os.environ['CQTDIFF_TRAIN_BACKBONE']}")
 
 
 def validate_official_model_configuration():
@@ -253,7 +268,7 @@ def validate_official_model_configuration():
     import importlib.util
 
     required_adapters = {
-        "CQT-Diff+ original": OFFICIAL_CQTDIFF_ADAPTER,
+        "MusicNet CQTdiff+ original": OFFICIAL_CQTDIFF_ADAPTER,
         "MAID original DDPM-Midi2Performance": MAID_ADAPTER,
     }
     missing = [
@@ -460,18 +475,15 @@ SKIP_IF_EXISTS = True
 # Seed tetap untuk semua sampling dataset agar eksperimen reproducible
 DATASET_RANDOM_SEED = 42
 
-# Native CQT-Diff configuration.
-# The official CQT-Diff checkpoint is configured for 22.05 kHz and 65536 samples.
-# Keeping the full pipeline at this native shape avoids the previous
-# 44.1 kHz/4 s -> center-crop path, which made the effective context
-# different from the experimental claim.
-CQT_NATIVE_SR = 22050
-CQT_NATIVE_SAMPLES = 65536
+# Native MusicNet CQTdiff+ configuration from audio-inpainting-diffusion.
+# The default backbone is trained at 44.1 kHz and 184184 samples (~4.18 s).
+CQT_NATIVE_SR = int(os.environ.get("PIPELINE_TARGET_SR", "44100"))
+CQT_NATIVE_SAMPLES = int(os.environ.get("PIPELINE_SEGMENT_SAMPLES", "184184"))
 TARGET_SR = CQT_NATIVE_SR
 SEGMENT_SAMPLES = CQT_NATIVE_SAMPLES
 SEGMENT_DURATION = SEGMENT_SAMPLES / TARGET_SR
 EXPERIMENT_CONFIG_ID = (
-    f"native_cqtdiff_sr{TARGET_SR}_n{SEGMENT_SAMPLES}_"
+    f"musicnet_cqtdiffplus_sr{TARGET_SR}_n{SEGMENT_SAMPLES}_"
     f"dur{SEGMENT_DURATION:.6f}s"
 )
 
@@ -727,7 +739,7 @@ def preprocess_audio(audio_path):
     Preprocessing standar untuk satu file audio:
     1. Load audio
     2. Konversi ke mono
-    3. Resample ke TARGET_SR (22.05 kHz, native CQT-Diff)
+    3. Resample ke TARGET_SR (44.1 kHz, native MusicNet CQTdiff+)
     4. Normalisasi RMS ke target level (-23 dBFS approx)
 
     Menggunakan RMS normalization alih-alih peak normalization
@@ -745,7 +757,7 @@ def preprocess_audio(audio_path):
 
 def split_into_segments(audio, file_seed=0):
     """
-    Potong audio panjang jadi segmen native CQT-Diff (~2.97 detik).
+    Potong audio panjang jadi segmen native MusicNet CQTdiff+ (~4.18 detik).
     Ambil maksimal MAX_SEGMENTS_PER_FILE secara random
     agar dataset lebih beragam.
 
@@ -2572,7 +2584,7 @@ def reconstructed_output_path(model_name: str, gap_ms: int, sample_index: int):
 
 
 CURRENT_RECONSTRUCTION_CACHE_TAG = None
-EVAL_CACHE_CODE_VERSION = "eval_cache_v3_native_cqt_gapaware"
+EVAL_CACHE_CODE_VERSION = "eval_cache_v4_musicnet_cqtdiffplus_gapaware"
 
 
 def _file_fingerprint(path: str):
@@ -4081,7 +4093,7 @@ def build_hybrid_cqtdiff_decoder(device):
     builder = _load_official_adapter(
         OFFICIAL_CQTDIFF_ADAPTER,
         "build_cqtdiff_decoder",
-        "CQT-Diff+ original",
+        "MusicNet CQTdiff+ original",
     )
     decoder = builder(
         device=device,
@@ -4093,10 +4105,10 @@ def build_hybrid_cqtdiff_decoder(device):
     decoder = _validate_decoder_interface(
         decoder,
         ["get_features", "decode_features", "inpaint", "parameters", "state_dict", "load_state_dict", "train", "eval"],
-        "CQT-Diff+ original",
+        "MusicNet CQTdiff+ original",
     )
     decoder.eval()
-    print("CQT-Diff+ original loaded via official adapter.")
+    print("MusicNet CQTdiff+ original loaded via official audio-inpainting adapter.")
     return decoder
 
 
@@ -5829,7 +5841,7 @@ else:
         axes = [axes]
     fig.suptitle(
         "Music Audio Inpainting — Baseline vs Hybrid SSL+Diffusion Models\n"
-        f"Native CQT-Diff: {TARGET_SR} Hz, {SEGMENT_SAMPLES} samples ({SEGMENT_DURATION:.2f}s), "
+        f"Native MusicNet CQTdiff+: {TARGET_SR} Hz, {SEGMENT_SAMPLES} samples ({SEGMENT_DURATION:.2f}s), "
         f"gap={EVAL_GAP_POSITION}",
         fontsize=13, fontweight='bold'
     )

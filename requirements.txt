@@ -22,6 +22,7 @@ omegaconf
 hydra-core
 wandb
 gdown
+cqt-nsgt-pytorch
 
 # Evaluation
 visqol-python>=3.3.3

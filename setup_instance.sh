@@ -99,6 +99,9 @@ mkdir -p external
 if [ ! -d external/CQTdiff/.git ]; then
   git clone https://github.com/eloimoliner/CQTdiff.git external/CQTdiff
 fi
+if [ ! -d external/audio-inpainting-diffusion/.git ]; then
+  git clone https://github.com/eloimoliner/audio-inpainting-diffusion.git external/audio-inpainting-diffusion
+fi
 if [ ! -d external/AudioMAE/.git ]; then
   git clone https://github.com/facebookresearch/AudioMAE.git external/AudioMAE
 fi
@@ -231,6 +234,15 @@ else
   echo "CQT-Diff+ weights already present."
 fi
 
+echo "==> Downloading audio-inpainting MusicNet CQTdiff+ weights"
+mkdir -p external/audio-inpainting-diffusion/experiments
+if [ ! -f external/audio-inpainting-diffusion/experiments/musicnet_44k_4s-560000.pt ]; then
+  wget -O external/audio-inpainting-diffusion/experiments/musicnet_44k_4s-560000.pt \
+    https://huggingface.co/Eloimoliner/audio-inpainting-diffusion/resolve/main/musicnet_44k_4s-560000.pt
+else
+  echo "Audio-inpainting MusicNet CQTdiff+ weights already present."
+fi
+
 echo "==> Downloading AudioMAE checkpoint"
 mkdir -p external/AudioMAE/ckpt
 if [ ! -f external/AudioMAE/ckpt/pretrained.pth ]; then
@@ -255,24 +267,30 @@ export MKL_NUM_THREADS="$PIPELINE_CPU_THREADS"
 export VECLIB_MAXIMUM_THREADS="$PIPELINE_CPU_THREADS"
 export NUMEXPR_NUM_THREADS="$PIPELINE_CPU_THREADS"
 export CQT_DIFF_DIR="$PROJECT_ROOT/external/CQTdiff"
+export AUDIO_INPAINTING_DIR="$PROJECT_ROOT/external/audio-inpainting-diffusion"
 export AUDIO_MAE_DIR="$PROJECT_ROOT/external/AudioMAE"
 export MIDI2PERFORMANCE_DIR="$PROJECT_ROOT/external/DDPM-Midi2Performance-Model"
 export CQTDIFF_WEIGHTS="$CQT_DIFF_DIR/experiments/cqt/cqt_weights.pt"
+export AUDIO_INPAINTING_CQTDIFF_WEIGHTS="$AUDIO_INPAINTING_DIR/experiments/musicnet_44k_4s-560000.pt"
 export AUDIOMAE_CHECKPOINT="$AUDIO_MAE_DIR/ckpt/pretrained.pth"
 export GSTPEAQ_DIR="$PROJECT_ROOT/external/gstpeaq"
 export GSTPEAQ_BIN="$GSTPEAQ_DIR/src/peaq"
 export GSTPEAQ_PLUGIN="$GSTPEAQ_DIR/src/.libs/libgstpeaq.so"
-export OFFICIAL_CQTDIFF_ADAPTER=official_cqtdiff_adapter
+export OFFICIAL_CQTDIFF_ADAPTER=official_audio_inpainting_cqtdiff_adapter
 export MAID_ADAPTER=official_maid_adapter
+export PIPELINE_TARGET_SR="${PIPELINE_TARGET_SR:-44100}"
+export PIPELINE_SEGMENT_SAMPLES="${PIPELINE_SEGMENT_SAMPLES:-184184}"
 
 # MAID: train from scratch (no pretrained DDPM-Midi2Performance checkpoint required)
 export ALLOW_RANDOM_MAID=1
 
-# CQT-Diff+ diffusion sampling config
+# MusicNet CQTdiff+ diffusion sampling config
 export CQTDIFF_DIFFUSION_STEPS="${CQTDIFF_DIFFUSION_STEPS:-35}"
 export CQTDIFF_DIFFUSION_XI="${CQTDIFF_DIFFUSION_XI:-0}"
 export CQTDIFF_SIGMA_MIN="${CQTDIFF_SIGMA_MIN:-1e-4}"
 export CQTDIFF_SIGMA_MAX="${CQTDIFF_SIGMA_MAX:-1.0}"
+export CQTDIFF_SIGMA_DATA="${CQTDIFF_SIGMA_DATA:-0.063}"
+export CQTDIFF_SCHURN="${CQTDIFF_SCHURN:-10}"
 EOF
 chmod +x env_instance.sh
 
@@ -295,31 +313,32 @@ api.create(mode="audio")
 result = api.measure_from_arrays(ref, deg, sample_rate=sr)
 print("visqol-python api create/measure: ok", float(result.moslqo))
 PY
-python -m py_compile code_final_run_v2.py official_cqtdiff_adapter.py official_maid_adapter.py
+python -m py_compile code_final_run_v2.py official_cqtdiff_adapter.py official_audio_inpainting_cqtdiff_adapter.py official_maid_adapter.py
 
-echo "==> CQT-Diff+ adapter smoke check"
+echo "==> Audio-inpainting MusicNet CQTdiff+ adapter smoke check"
 python - <<'PY'
 import os, sys, torch
+os.environ["CQTDIFF_DIFFUSION_STEPS"] = "3"
 sys.path.insert(0, os.environ["PROJECT_ROOT"])
-sys.path.insert(0, os.environ["CQT_DIFF_DIR"])
+sys.path.insert(0, os.environ["AUDIO_INPAINTING_DIR"])
 
-from official_cqtdiff_adapter import build_cqtdiff_decoder
+from official_audio_inpainting_cqtdiff_adapter import build_cqtdiff_decoder
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 decoder = build_cqtdiff_decoder(
-    device=device, target_sr=22050, segment_samples=65536,
-    gap_durations_ms=[500], cqt_diff_dir=os.environ["CQT_DIFF_DIR"],
+    device=device, target_sr=44100, segment_samples=184184,
+    gap_durations_ms=[500], audio_inpainting_dir=os.environ["AUDIO_INPAINTING_DIR"],
 )
 decoder.eval()
-print(f"CQT-Diff+ adapter loaded OK on {device}")
+print(f"Audio-inpainting MusicNet CQTdiff+ adapter loaded OK on {device}")
 print(f"  Diffusion steps: {decoder.DIFFUSION_STEPS}")
 print(f"  Native SR: {decoder.native_sr}, Native len: {decoder.native_len}")
 print(f"  Backbone params: {sum(p.numel() for p in decoder.backbone.parameters()):,}")
 
 # Quick inpaint test (synthetic)
 import numpy as np
-audio = np.random.randn(65536).astype(np.float32) * 0.1
-mask = np.zeros(65536, dtype=bool)
-gap_samples = int(round(22050 * 500 / 1000))
+audio = np.random.randn(184184).astype(np.float32) * 0.1
+mask = np.zeros(184184, dtype=bool)
+gap_samples = int(round(44100 * 500 / 1000))
 gap_start = len(audio) // 2 - gap_samples // 2
 gap_end = gap_start + gap_samples
 mask[gap_start:gap_end] = True
@@ -328,7 +347,6 @@ audio[gap_start:gap_end] = 0.0
 with torch.inference_mode():
     mt = torch.from_numpy(audio).float().unsqueeze(0).to(device)
     mk = torch.from_numpy(mask).unsqueeze(0).to(device)
-    os.environ["CQTDIFF_DIFFUSION_STEPS"] = "3"
     recon = decoder.inpaint(mt, mk, conditioning=None)
     rms = np.sqrt(np.mean(recon[gap_start:gap_end] ** 2))
     print(f"  Smoke inpaint (3 steps): gap RMS = {rms:.6f} {'OK' if rms > 0.001 else 'FAIL'}")
