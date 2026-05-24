@@ -3413,7 +3413,9 @@ def print_epoch_loss_breakdown(model_name, epoch, metric_means):
         "avg_waveform_gap_loss",
         "avg_energy_loss",
         "avg_condition_gate_mean",
+        "avg_conditioning_wave_rms",
         "avg_conditioned_residual_rms",
+        "avg_conditioned_residual_scaled_rms",
     ]
     parts = []
     for key in keys:
@@ -3568,7 +3570,12 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
     }
     if collect_diagnostics:
         result["_diagnostics"] = diagnostics
-    for key in ("condition_gate_mean", "conditioned_residual_rms", "conditioning_wave_rms"):
+    for key in (
+        "condition_gate_mean",
+        "conditioning_wave_rms",
+        "conditioned_residual_rms",
+        "conditioned_residual_scaled_rms",
+    ):
         if "loss_parts" in locals() and key in loss_parts:
             value = loss_parts[key]
             result[key] = value.item() if isinstance(value, torch.Tensor) else float(value)
