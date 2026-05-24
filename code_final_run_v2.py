@@ -494,7 +494,7 @@ GAP_DURATIONS_MS = [100, 300, 500, 750, 1200, 1700]
 DATASET_FRACTION = 0.5
 
 # Jumlah sampel evaluasi (bisa override via env var untuk test run cepat)
-N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "10"))
+N_EVAL_SAMPLES = int(os.environ.get("N_EVAL_SAMPLES", "100"))
 # Eval final harus fresh by default: hapus WAV rekonstruksi lama sebelum inpaint,
 # lalu generate ulang semua output untuk checkpoint/model yang sedang diload.
 EVAL_REUSE_RECONSTRUCTIONS = os.environ.get("EVAL_REUSE_RECONSTRUCTIONS", "0").lower() in {"1", "true", "yes", "on"}
@@ -2980,7 +2980,7 @@ def build_audio_loader(ds, batch_size, shuffle, num_workers=AUTO_NUM_WORKERS):
     return DataLoader(ds, **kwargs)
 
 
-def make_dataloaders(batch_size=16, num_workers=AUTO_NUM_WORKERS, cache_audio=CACHE_AUDIO_IN_MEMORY):
+def make_dataloaders(batch_size=48, num_workers=AUTO_NUM_WORKERS, cache_audio=CACHE_AUDIO_IN_MEMORY):
     """Buat DataLoader untuk train/val/test dengan group-aware split."""
     meta_path = os.path.join(PATHS["preprocessed"], "metadata.csv")
     meta_df = pd.read_csv(meta_path)
@@ -3541,7 +3541,7 @@ def should_early_stop(history, best_val_loss, current_epoch, model_name):
 
 
 def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
-                num_epochs=50, lr=1e-4, device="cuda", checkpoint_dir=None,
+                num_epochs=100, lr=1e-4, device="cuda", checkpoint_dir=None,
                 model_name="model", batch_size=None, dataset_fraction=None):
     """
     Training loop lengkap untuk hybrid model (encoder + FiLM + decoder).
@@ -3653,7 +3653,7 @@ def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
 
 
 def train_baseline_model(decoder, train_loader, val_loader=None,
-                         num_epochs=50, lr=1e-4, device="cuda",
+                         num_epochs=100, lr=1e-4, device="cuda",
                          checkpoint_dir=None, model_name="baseline_cqtdiff",
                          batch_size=None, dataset_fraction=None):
     """
@@ -5159,9 +5159,9 @@ else:
 
 MODEL_NAME = "baseline_cqtdiff_finetuned"
 FORCE_RETRAIN = True
-BATCH_SIZE = 16
+BATCH_SIZE = 48
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | model: {MODEL_NAME} | "
@@ -5319,10 +5319,10 @@ else:
 MODEL_NAME = "clap_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 48
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -5450,10 +5450,10 @@ else:
 MODEL_NAME = "clap_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 48
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -5581,10 +5581,10 @@ else:
 MODEL_NAME = "audiomae_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 48
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -5712,9 +5712,9 @@ else:
 MODEL_NAME = "audiomae_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 16
+BATCH_SIZE = 48
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 5
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
