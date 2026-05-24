@@ -302,9 +302,9 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
         except Exception:
             return x
 
-    def _conditioning_to_waveform(self, conditioning, target_len):
+    def _conditioning_to_waveform(self, conditioning, target_len, return_stats=False):
         if conditioning is None:
-            return None
+            return (None, {}) if return_stats else None
         conditioning = conditioning.to(self.device_ref, dtype=torch.float32)
         if conditioning.dim() == 2:
             conditioning = conditioning.unsqueeze(1)
@@ -330,12 +330,28 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
 
         pooled = conditioning.mean(dim=1)
         gate = torch.sigmoid(self.condition_gate(pooled)).clamp(0.0, 1.0)
-        return gate * wave
+        conditioned_wave = gate * wave
+        if return_stats:
+            stats = {
+                "condition_gate_mean": gate.detach().mean(),
+                "conditioning_wave_rms": torch.sqrt(wave.detach().pow(2).mean().clamp_min(1e-12)),
+                "conditioned_residual_rms": torch.sqrt(
+                    conditioned_wave.detach().pow(2).mean().clamp_min(1e-12)
+                ),
+            }
+            return conditioned_wave, stats
+        return conditioned_wave
 
-    def _conditioned_model(self, conditioning, target_len):
-        cond_wave_target = self._conditioning_to_waveform(conditioning, target_len)
+    def _conditioned_model(self, conditioning, target_len, return_stats=False):
+        if return_stats:
+            cond_wave_target, cond_stats = self._conditioning_to_waveform(
+                conditioning, target_len, return_stats=True
+            )
+        else:
+            cond_wave_target = self._conditioning_to_waveform(conditioning, target_len)
+            cond_stats = {}
         if cond_wave_target is None:
-            return self.backbone
+            return (self.backbone, cond_stats) if return_stats else self.backbone
 
         cond_wave_native = self._to_native(cond_wave_target)
         sigma_scale_fn = self.sigma_scale_net
@@ -360,7 +376,7 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
             scale = 1.0 + sigma_scale_fn(sigma_val)
             return base + scale * residual
 
-        return model
+        return (model, cond_stats) if return_stats else model
 
     def _run_diffusion_sampling(self, y, mask, T=None, show_progress=True, conditioning=None):
         if T is None:
@@ -504,7 +520,9 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
         noise = torch.randn_like(clean_native) * sigma
         x_noisy = keep_mask * masked_native + gap_mask * (clean_native + noise)
 
-        denoiser_model = self._conditioned_model(conditioning, target_len=clean_audio.shape[-1])
+        denoiser_model, cond_stats = self._conditioned_model(
+            conditioning, target_len=clean_audio.shape[-1], return_stats=True
+        )
         denoised = self.diff_params.denoiser(x_noisy, denoiser_model, sigma.squeeze(1))
         denoised = self._apply_cqt_dc_filter(denoised)
         denoised = keep_mask * masked_native + gap_mask * denoised
@@ -523,6 +541,7 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
             "gap_loss": gap_loss,
             "full_loss": full_loss,
             "energy_loss": energy_loss,
+            **cond_stats,
         }
 
     def inpaint(self, masked_audio, mask, conditioning=None, diffusion_audio=None):

@@ -3270,8 +3270,201 @@ def print_epoch_profile(model_name, epoch, summary):
     )
 
 
+TRAIN_DIAGNOSTICS_ENABLED = os.environ.get("TRAIN_DIAGNOSTICS_ENABLED", "1").lower() in {
+    "1",
+    "true",
+    "yes",
+}
+TRAIN_DIAGNOSTICS_EVERY_EPOCHS = int(os.environ.get("TRAIN_DIAGNOSTICS_EVERY_EPOCHS", "1"))
+TRAIN_DIAGNOSTICS_MAX_UPDATE_ELEMENTS = int(os.environ.get("TRAIN_DIAGNOSTICS_MAX_UPDATE_ELEMENTS", "20000000"))
+
+
+def _named_trainable_parameters(module_items):
+    named_params = []
+    for prefix, module in module_items:
+        if module is None:
+            continue
+        for name, param in module.named_parameters():
+            if param.requires_grad:
+                named_params.append((f"{prefix}.{name}", param))
+    return named_params
+
+
+def _module_param_count(module):
+    total = sum(p.numel() for p in module.parameters())
+    trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+    return total, trainable
+
+
+def make_trainable_optimizer(model_name, module_items, lr, weight_decay=1e-4):
+    """Create AdamW over parameters that can actually receive gradients."""
+    named_params = _named_trainable_parameters(module_items)
+    if not named_params:
+        raise RuntimeError(
+            f"{model_name}: tidak ada parameter trainable. "
+            "Cek requires_grad pada decoder/FiLM sebelum training."
+        )
+
+    total_trainable = sum(param.numel() for _, param in named_params)
+    print(f"Trainable setup {model_name}:")
+    for prefix, module in module_items:
+        if module is None:
+            continue
+        total, trainable = _module_param_count(module)
+        print(f"  - {prefix}: trainable={trainable:,}/{total:,} params")
+    preview = ", ".join(name for name, _ in named_params[:6])
+    if len(named_params) > 6:
+        preview += ", ..."
+    print(f"  Optimizer receives {len(named_params)} tensors / {total_trainable:,} trainable params")
+    print(f"  Trainable parameter preview: {preview}")
+
+    optimizer = torch.optim.AdamW([param for _, param in named_params], lr=lr, weight_decay=weight_decay)
+    return optimizer, named_params
+
+
+def _clone_params_for_update(named_params):
+    total_elements = sum(param.numel() for _, param in named_params)
+    if total_elements > TRAIN_DIAGNOSTICS_MAX_UPDATE_ELEMENTS:
+        return None, total_elements
+    return [(name, param.detach().float().clone()) for name, param in named_params], total_elements
+
+
+def _gradient_diagnostics(named_params):
+    grad_sq = 0.0
+    max_abs = 0.0
+    none_count = 0
+    zero_count = 0
+    tensor_count = 0
+    for _, param in named_params:
+        tensor_count += 1
+        if param.grad is None:
+            none_count += 1
+            continue
+        grad = param.grad.detach().float()
+        grad_norm = float(torch.linalg.vector_norm(grad).item())
+        grad_sq += grad_norm ** 2
+        max_abs = max(max_abs, float(grad.abs().max().item()))
+        if grad_norm == 0.0:
+            zero_count += 1
+    return {
+        "grad_l2": grad_sq ** 0.5,
+        "grad_max_abs": max_abs,
+        "grad_none_tensors": none_count,
+        "grad_zero_tensors": zero_count,
+        "grad_tensor_count": tensor_count,
+    }
+
+
+def _update_diagnostics(snapshot, named_params, total_elements):
+    if snapshot is None:
+        return {
+            "param_update_l2": None,
+            "param_l2": None,
+            "param_update_ratio": None,
+            "param_update_skipped_elements": total_elements,
+        }
+
+    current_by_name = {name: param for name, param in named_params}
+    update_sq = 0.0
+    param_sq = 0.0
+    for name, before in snapshot:
+        param = current_by_name[name].detach().float()
+        before = before.to(param.device)
+        update_sq += float(torch.sum((param - before) ** 2).item())
+        param_sq += float(torch.sum(param ** 2).item())
+    update_l2 = update_sq ** 0.5
+    param_l2 = param_sq ** 0.5
+    return {
+        "param_update_l2": update_l2,
+        "param_l2": param_l2,
+        "param_update_ratio": update_l2 / max(param_l2, 1e-12),
+        "param_update_skipped_elements": 0,
+    }
+
+
+def _should_collect_train_diagnostics(epoch, step_idx):
+    if not TRAIN_DIAGNOSTICS_ENABLED:
+        return False
+    if step_idx != 0:
+        return False
+    return (epoch % max(1, TRAIN_DIAGNOSTICS_EVERY_EPOCHS)) == 0
+
+
+def _add_epoch_metric(epoch_metrics, metrics):
+    for key, value in metrics.items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, (int, float, np.floating)) and np.isfinite(value):
+            epoch_metrics.setdefault(key, []).append(float(value))
+
+
+def _mean_epoch_metrics(epoch_metrics):
+    return {
+        f"avg_{key}": float(np.mean(values))
+        for key, values in epoch_metrics.items()
+        if values
+    }
+
+
+def print_epoch_loss_breakdown(model_name, epoch, metric_means):
+    keys = [
+        "avg_gap_loss",
+        "avg_full_loss",
+        "avg_waveform_gap_loss",
+        "avg_energy_loss",
+        "avg_condition_gate_mean",
+        "avg_conditioned_residual_rms",
+    ]
+    parts = []
+    for key in keys:
+        value = metric_means.get(key)
+        if value is not None and np.isfinite(value):
+            parts.append(f"{key.replace('avg_', '')}={value:.6g}")
+    if parts:
+        print(f"  Loss parts {model_name} epoch {epoch}: " + " | ".join(parts))
+
+
+def print_train_diagnostics(model_name, epoch, diagnostics):
+    if not diagnostics:
+        return
+    msg = (
+        f"  Train diagnostics {model_name} epoch {epoch}: "
+        f"grad_l2={diagnostics.get('grad_l2', 0.0):.3e} | "
+        f"grad_max={diagnostics.get('grad_max_abs', 0.0):.3e} | "
+        f"none_grad={diagnostics.get('grad_none_tensors', 0)}/{diagnostics.get('grad_tensor_count', 0)} | "
+        f"zero_grad={diagnostics.get('grad_zero_tensors', 0)}/{diagnostics.get('grad_tensor_count', 0)}"
+    )
+    if diagnostics.get("param_update_l2") is not None:
+        msg += (
+            f" | update_l2={diagnostics['param_update_l2']:.3e} "
+            f"(ratio={diagnostics['param_update_ratio']:.3e})"
+        )
+    else:
+        msg += f" | update_l2=skipped({diagnostics.get('param_update_skipped_elements', 0):,} elems)"
+    print(msg)
+
+
+def trainable_parameter_fingerprint(module_items):
+    """Small numeric fingerprint for checking whether saved trainable weights move."""
+    l2_sq = 0.0
+    checksum = 0.0
+    count = 0
+    with torch.no_grad():
+        for _, param in _named_trainable_parameters(module_items):
+            data = param.detach().float()
+            l2_sq += float(torch.sum(data ** 2).item())
+            checksum += float(torch.sum(data).item())
+            count += int(data.numel())
+    return {
+        "trainable_param_count": count,
+        "trainable_param_l2": l2_sq ** 0.5,
+        "trainable_param_checksum": checksum,
+    }
+
+
 def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scaler,
-                              cfg_drop=0.1, device="cuda", profile_step=False):
+                              cfg_drop=0.1, device="cuda", profile_step=False,
+                              diagnostic_named_params=None, collect_diagnostics=False):
     """Satu step training hybrid: CQT uses conditioned diffusion loss, fallback uses STFT loss."""
     decoder.train()
     film.train()
@@ -3340,19 +3533,32 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
                 + CQT_ENERGY_LOSS_WEIGHT * energy_loss
             )
 
+    diagnostics = {}
+    update_snapshot = None
+    update_elements = 0
+    if collect_diagnostics and diagnostic_named_params is not None:
+        update_snapshot, update_elements = _clone_params_for_update(diagnostic_named_params)
+
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
     scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(
-        list(decoder.parameters()) + list(film.parameters()), max_norm=1.0
+    clip_params = (
+        [param for _, param in diagnostic_named_params]
+        if diagnostic_named_params is not None
+        else [p for p in list(decoder.parameters()) + list(film.parameters()) if p.requires_grad]
     )
+    if collect_diagnostics and diagnostic_named_params is not None:
+        diagnostics.update(_gradient_diagnostics(diagnostic_named_params))
+    torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0)
     scaler.step(optimizer)
     scaler.update()
+    if collect_diagnostics and diagnostic_named_params is not None:
+        diagnostics.update(_update_diagnostics(update_snapshot, diagnostic_named_params, update_elements))
     _sync_if_profile(profile_step)
     if profile_step:
         profile["gpu_compute_seconds"] = time.perf_counter() - t_gpu
 
-    return {
+    result = {
         "loss": loss.item(),
         "gap_loss": gap_loss.item(),
         "full_loss": full_loss.item(),
@@ -3360,9 +3566,17 @@ def train_step_reconstruction(decoder, encoder_fn, film, batch, optimizer, scale
         "energy_loss": energy_loss.item(),
         "_profile": profile,
     }
+    if collect_diagnostics:
+        result["_diagnostics"] = diagnostics
+    for key in ("condition_gate_mean", "conditioned_residual_rms", "conditioning_wave_rms"):
+        if "loss_parts" in locals() and key in loss_parts:
+            value = loss_parts[key]
+            result[key] = value.item() if isinstance(value, torch.Tensor) else float(value)
+    return result
 
 
-def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profile_step=False):
+def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profile_step=False,
+                        diagnostic_named_params=None, collect_diagnostics=False):
     """Training step buat baseline (tanpa encoder, tanpa FiLM)."""
     decoder.train()
     profile = {}
@@ -3399,17 +3613,32 @@ def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profil
             + CQT_ENERGY_LOSS_WEIGHT * energy_loss
         )
 
+    diagnostics = {}
+    update_snapshot = None
+    update_elements = 0
+    if collect_diagnostics and diagnostic_named_params is not None:
+        update_snapshot, update_elements = _clone_params_for_update(diagnostic_named_params)
+
     optimizer.zero_grad(set_to_none=True)
     scaler.scale(loss).backward()
     scaler.unscale_(optimizer)
-    torch.nn.utils.clip_grad_norm_(decoder.parameters(), max_norm=1.0)
+    clip_params = (
+        [param for _, param in diagnostic_named_params]
+        if diagnostic_named_params is not None
+        else [p for p in decoder.parameters() if p.requires_grad]
+    )
+    if collect_diagnostics and diagnostic_named_params is not None:
+        diagnostics.update(_gradient_diagnostics(diagnostic_named_params))
+    torch.nn.utils.clip_grad_norm_(clip_params, max_norm=1.0)
     scaler.step(optimizer)
     scaler.update()
+    if collect_diagnostics and diagnostic_named_params is not None:
+        diagnostics.update(_update_diagnostics(update_snapshot, diagnostic_named_params, update_elements))
     _sync_if_profile(profile_step)
     if profile_step:
         profile["gpu_compute_seconds"] = time.perf_counter() - t_gpu
 
-    return {
+    result = {
         "loss": loss.item(),
         "gap_loss": gap_loss.item(),
         "full_loss": full_loss.item(),
@@ -3417,6 +3646,9 @@ def train_step_baseline(decoder, batch, optimizer, scaler, device="cuda", profil
         "energy_loss": energy_loss.item(),
         "_profile": profile,
     }
+    if collect_diagnostics:
+        result["_diagnostics"] = diagnostics
+    return result
 
 
 def get_training_checkpoint_paths(checkpoint_dir, model_name):
@@ -3437,6 +3669,9 @@ def save_training_checkpoint(decoder, optimizer, epoch, metric, checkpoint_dir, 
                              film=None, scheduler=None, scaler=None, history=None,
                              best_val_loss=None, is_best=False, metric_name="val_loss"):
     paths = get_training_checkpoint_paths(checkpoint_dir, model_name)
+    trainable_fingerprint = trainable_parameter_fingerprint(
+        [("decoder", decoder), ("film", film)] if film is not None else [("decoder", decoder)]
+    )
     payload = {
         "model_name": model_name,
         "epoch": int(epoch),
@@ -3451,6 +3686,7 @@ def save_training_checkpoint(decoder, optimizer, epoch, metric, checkpoint_dir, 
         "saved_at": pd.Timestamp.now().isoformat(),
         "stage": globals().get("PIPELINE_STAGE_NAME", "code_v3"),
         "architecture": getattr(decoder, "architecture_name", decoder.__class__.__name__),
+        **trainable_fingerprint,
     }
     if film is not None:
         payload["film_state"] = film.state_dict()
@@ -3460,6 +3696,12 @@ def save_training_checkpoint(decoder, optimizer, epoch, metric, checkpoint_dir, 
         atomic_torch_save(payload, paths["best"])
         print(f"  Best checkpoint saved: {paths['best']}")
     print(f"  Latest checkpoint saved: {paths['latest']}")
+    print(
+        "  Checkpoint trainable fingerprint: "
+        f"count={trainable_fingerprint['trainable_param_count']:,} | "
+        f"l2={trainable_fingerprint['trainable_param_l2']:.6e} | "
+        f"checksum={trainable_fingerprint['trainable_param_checksum']:.6e}"
+    )
     return paths
 
 
@@ -3487,7 +3729,13 @@ def load_training_checkpoint_if_available(decoder, optimizer, scheduler, scaler,
     if film is not None and payload.get("film_state") is not None:
         film.load_state_dict(payload["film_state"])
     if optimizer is not None and payload.get("optimizer_state") is not None:
-        optimizer.load_state_dict(payload["optimizer_state"])
+        try:
+            optimizer.load_state_dict(payload["optimizer_state"])
+        except ValueError as exc:
+            print(
+                f"Optimizer state checkpoint tidak kompatibel untuk {model_name}; "
+                f"optimizer dibuat ulang dari parameter trainable saat ini. Detail: {exc}"
+            )
     if scheduler is not None and payload.get("scheduler_state") is not None:
         scheduler.load_state_dict(payload["scheduler_state"])
     if scaler is not None and payload.get("scaler_state") is not None:
@@ -3505,10 +3753,10 @@ def load_training_checkpoint_if_available(decoder, optimizer, scheduler, scaler,
 
 
 EARLY_STOPPING_ENABLED = os.environ.get("EARLY_STOPPING_ENABLED", "1").lower() in {"1", "true", "yes"}
-EARLY_STOPPING_PATIENCE = int(os.environ.get("EARLY_STOPPING_PATIENCE", "4"))
+EARLY_STOPPING_PATIENCE = int(os.environ.get("EARLY_STOPPING_PATIENCE", "5"))
 EARLY_STOPPING_MIN_DELTA = float(os.environ.get("EARLY_STOPPING_MIN_DELTA", "1e-4"))
-EARLY_STOPPING_MIN_EPOCHS = int(os.environ.get("EARLY_STOPPING_MIN_EPOCHS", "30"))
-VAL_EVERY_EPOCHS = int(os.environ.get("VAL_EVERY_EPOCHS", "5"))
+EARLY_STOPPING_MIN_EPOCHS = int(os.environ.get("EARLY_STOPPING_MIN_EPOCHS", "5"))
+VAL_EVERY_EPOCHS = int(os.environ.get("VAL_EVERY_EPOCHS", "1"))
 
 
 def _count_stale_validations(history, best_val_loss,
@@ -3547,9 +3795,9 @@ def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
     Training loop lengkap untuk hybrid model (encoder + FiLM + decoder).
     Saves latest checkpoints every epoch and resumes from *_latest.pt.
     """
-    optimizer = torch.optim.AdamW(
-        list(decoder.parameters()) + list(film.parameters()),
-        lr=lr, weight_decay=1e-4
+    module_items = [("decoder", decoder), ("film", film)]
+    optimizer, diagnostic_named_params = make_trainable_optimizer(
+        model_name, module_items, lr=lr, weight_decay=1e-4
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=True)
@@ -3571,24 +3819,35 @@ def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
         decoder.train()
         film.train()
         epoch_losses = []
+        epoch_metrics = {}
+        epoch_diagnostics = None
 
         profiler = EpochProfiler()
         data_wait_start = time.perf_counter()
         for step_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)):
             profiler.add_data_wait(time.perf_counter() - data_wait_start)
+            collect_diag = _should_collect_train_diagnostics(epoch + 1, step_idx)
             metrics = train_step_reconstruction(
                 decoder, encoder_fn, film, batch, optimizer, scaler, device=device,
                 profile_step=profiler.should_profile(step_idx),
+                diagnostic_named_params=diagnostic_named_params,
+                collect_diagnostics=collect_diag,
             )
             profiler.add_step_profile(metrics.get("_profile"))
             epoch_losses.append(metrics["loss"])
+            _add_epoch_metric(epoch_metrics, metrics)
+            if metrics.get("_diagnostics"):
+                epoch_diagnostics = metrics["_diagnostics"]
             data_wait_start = time.perf_counter()
 
         avg_loss = float(np.mean(epoch_losses)) if epoch_losses else float("nan")
+        metric_means = _mean_epoch_metrics(epoch_metrics)
         epoch_seconds = time.perf_counter() - epoch_start
         profile_summary = profiler.summary()
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"  Epoch {epoch+1}/{num_epochs} | Loss: {avg_loss:.6f} | LR: {lr_now:.2e} | Time: {format_duration(epoch_seconds)}")
+        print_epoch_loss_breakdown(model_name, epoch + 1, metric_means)
+        print_train_diagnostics(model_name, epoch + 1, epoch_diagnostics)
         print_epoch_profile(model_name, epoch + 1, profile_summary)
         scheduler.step()
 
@@ -3612,6 +3871,8 @@ def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
             "epoch_time": format_duration(epoch_seconds),
             "learning_rate": lr_now,
             "peak_vram_gb": get_peak_vram_gb(),
+            **metric_means,
+            **(epoch_diagnostics or {}),
             **profile_summary,
         })
 
@@ -3660,7 +3921,10 @@ def train_baseline_model(decoder, train_loader, val_loader=None,
     Training loop buat baseline (tanpa encoder, tanpa FiLM).
     Saves latest checkpoints every epoch and resumes from *_latest.pt.
     """
-    optimizer = torch.optim.AdamW(decoder.parameters(), lr=lr, weight_decay=1e-4)
+    module_items = [("decoder", decoder)]
+    optimizer, diagnostic_named_params = make_trainable_optimizer(
+        model_name, module_items, lr=lr, weight_decay=1e-4
+    )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=True)
 
@@ -3680,24 +3944,35 @@ def train_baseline_model(decoder, train_loader, val_loader=None,
         epoch_start = time.perf_counter()
         decoder.train()
         epoch_losses = []
+        epoch_metrics = {}
+        epoch_diagnostics = None
 
         profiler = EpochProfiler()
         data_wait_start = time.perf_counter()
         for step_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)):
             profiler.add_data_wait(time.perf_counter() - data_wait_start)
+            collect_diag = _should_collect_train_diagnostics(epoch + 1, step_idx)
             metrics = train_step_baseline(
                 decoder, batch, optimizer, scaler, device=device,
                 profile_step=profiler.should_profile(step_idx),
+                diagnostic_named_params=diagnostic_named_params,
+                collect_diagnostics=collect_diag,
             )
             profiler.add_step_profile(metrics.get("_profile"))
             epoch_losses.append(metrics["loss"])
+            _add_epoch_metric(epoch_metrics, metrics)
+            if metrics.get("_diagnostics"):
+                epoch_diagnostics = metrics["_diagnostics"]
             data_wait_start = time.perf_counter()
 
         avg_loss = float(np.mean(epoch_losses)) if epoch_losses else float("nan")
+        metric_means = _mean_epoch_metrics(epoch_metrics)
         epoch_seconds = time.perf_counter() - epoch_start
         profile_summary = profiler.summary()
         lr_now = optimizer.param_groups[0]["lr"]
         print(f"  Epoch {epoch+1}/{num_epochs} | Loss: {avg_loss:.6f} | LR: {lr_now:.2e} | Time: {format_duration(epoch_seconds)}")
+        print_epoch_loss_breakdown(model_name, epoch + 1, metric_means)
+        print_train_diagnostics(model_name, epoch + 1, epoch_diagnostics)
         print_epoch_profile(model_name, epoch + 1, profile_summary)
         scheduler.step()
 
@@ -3721,6 +3996,8 @@ def train_baseline_model(decoder, train_loader, val_loader=None,
             "epoch_time": format_duration(epoch_seconds),
             "learning_rate": lr_now,
             "peak_vram_gb": get_peak_vram_gb(),
+            **metric_means,
+            **(epoch_diagnostics or {}),
             **profile_summary,
         })
 
@@ -4437,9 +4714,9 @@ def train_maid_model(decoder, encoder_fn, film, train_loader, val_loader=None,
                      num_epochs=20, lr=1e-4, device="cuda", checkpoint_dir=None,
                      model_name="model", batch_size=None, dataset_fraction=None):
     """Training loop MAID (mel reconstruction) with resume-safe checkpointing."""
-    optimizer = torch.optim.AdamW(
-        list(decoder.parameters()) + list(film.parameters()),
-        lr=lr, weight_decay=1e-4,
+    module_items = [("decoder", decoder), ("film", film)]
+    optimizer, _ = make_trainable_optimizer(
+        model_name, module_items, lr=lr, weight_decay=1e-4
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=True)
@@ -5161,7 +5438,7 @@ MODEL_NAME = "baseline_cqtdiff_finetuned"
 FORCE_RETRAIN = True
 BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 100
+NUM_EPOCHS = 30
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | model: {MODEL_NAME} | "
@@ -5322,7 +5599,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 30
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -5453,7 +5730,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 30
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -5584,7 +5861,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 30
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -5714,7 +5991,7 @@ FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
 BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
-NUM_EPOCHS = 100
+NUM_EPOCHS = 30
 LEARNING_RATE = 1e-4
 
 print(f"Config stage: {PIPELINE_STAGE_NAME} | dataset_fraction={DATASET_FRACTION:.0%} | batch_size={BATCH_SIZE} | epochs={NUM_EPOCHS}")
