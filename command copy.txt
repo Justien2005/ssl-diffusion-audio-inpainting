@@ -5,7 +5,8 @@ python code_it_v2.py --phase all --models audiomae_cqtdiff && \
 python code_it_v2.py --phase all --models audiomae_maid
 
 
-python code_final_run_v2.py --phase all --models baseline_cqtdiff && \
+python code_final_run_v2.py --phase eval --models baseline_cqtdiff && \
+python code_final_run_v2.py --phase train,eval --models baseline_cqtdiff_finetuned && \
 python code_final_run_v2.py --phase all --models clap_cqtdiff && \
 python code_final_run_v2.py --phase all --models clap_maid && \
 python code_final_run_v2.py --phase all --models audiomae_cqtdiff && \
@@ -16,8 +17,15 @@ ls && \
 ls -la && \
 ls
 
-python code_final_run_v2.py --phase train,eval --models baseline_cqtdiff
+python code_final_run_v2.py --phase eval --models baseline_cqtdiff
+python code_final_run_v2.py --phase train,eval --models baseline_cqtdiff_finetuned
 python code_final_run_v2.py --phase train,eval --models audiomae_cqtdiff
 python code_final_run_v2.py --phase train,eval --models clap_cqtdiff
 python code_final_run_v2.py --phase train,eval --models audiomae_maid
 python code_final_run_v2.py --phase train,eval --models clap_maid
+
+nohup bash -c '
+python code_final_run_v2.py --phase train --models baseline_cqtdiff_finetuned && \
+python code_final_run_v2.py --phase train --models audiomae_cqtdiff && \
+python code_final_run_v2.py --phase train --models clap_cqtdiff
+' > final_run.log 2>&1 &

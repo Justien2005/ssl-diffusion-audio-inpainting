@@ -3002,8 +3002,15 @@ def make_dataloaders(batch_size=16, num_workers=AUTO_NUM_WORKERS, cache_audio=CA
     return loaders
 
 
+def _artifact_safe_key(value):
+    """Return a filesystem-safe key while preserving model-level uniqueness."""
+    raw = str(value).strip()
+    safe = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in raw)
+    return safe or "unknown"
+
+
 def _encoder_cache_path(model_name, split_name, dataset_len):
-    encoder_key = str(model_name).split("_")[0]
+    encoder_key = _artifact_safe_key(model_name)
     gaps = "-".join(str(g) for g in GAP_DURATIONS_MS)
     config_key = EXPERIMENT_CONFIG_ID.replace(".", "p")
     cache_dir = os.path.join(PATHS["preprocessed"], "encoder_latents")
@@ -4911,6 +4918,84 @@ print("\nRun selection:")
 print(f"   phases: {sorted(RUN_PHASES)}")
 print(f"   models: {sorted(RUN_MODEL_SELECTION)}")
 print(f"   auto_stop: {AUTO_STOP_INSTANCE}")
+if "train" in RUN_PHASES and "baseline_cqtdiff" in RUN_MODEL_SELECTION:
+    print(
+        "   note: baseline_cqtdiff adalah pretrained-only; phase train akan dilewati. "
+        "Gunakan baseline_cqtdiff_finetuned untuk baseline no-SSL yang di-train."
+    )
+
+
+def validate_model_artifact_isolation(model_names=None):
+    """Fail early if two model configs would write to the same model-specific artifact."""
+    model_names = list(model_names or EXPECTED_MODEL_CONFIGS)
+    artifact_groups = {
+        "result_csv": {
+            model: os.path.join(PATHS["results"], f"{evaluation_artifact_name(model)}_results.csv")
+            for model in model_names
+        },
+        "output_dir": {
+            model: os.path.join(PATHS["outputs"], evaluation_artifact_name(model))
+            for model in model_names
+        },
+        "checkpoint_dir": {
+            model: get_model_checkpoint_dir(model)
+            for model in model_names
+        },
+        "checkpoint_best": {
+            model: get_model_checkpoint_path(model)
+            for model in model_names
+        },
+        "checkpoint_latest": {
+            model: os.path.join(get_model_checkpoint_dir(model), f"{model}_latest.pt")
+            for model in model_names
+        },
+        "training_history_csv": {
+            model: os.path.join(PATHS["logs"], f"{model}_training_history.csv")
+            for model in model_names
+        },
+        "training_history_png": {
+            model: os.path.join(PATHS["plots"], f"{model}_training_history.png")
+            for model in model_names
+        },
+        "encoder_cache_train": {
+            model: _encoder_cache_path(model, "train", 12345)
+            for model in model_names
+        },
+        "encoder_cache_val": {
+            model: _encoder_cache_path(model, "val", 12345)
+            for model in model_names
+        },
+    }
+
+    collisions = []
+    for group_name, paths_by_model in artifact_groups.items():
+        seen = {}
+        for model, path in paths_by_model.items():
+            norm_path = os.path.normcase(os.path.abspath(path))
+            if norm_path in seen:
+                collisions.append((group_name, seen[norm_path], model, path))
+            else:
+                seen[norm_path] = model
+
+    if collisions:
+        detail = "\n".join(
+            f"  - {group}: {left} dan {right} -> {path}"
+            for group, left, right, path in collisions
+        )
+        raise RuntimeError(
+            "Artifact collision terdeteksi antar konfigurasi model. "
+            "Run dihentikan supaya output/checkpoint tidak tertimpa:\n" + detail
+        )
+
+    pretrained = "baseline_cqtdiff"
+    finetuned = "baseline_cqtdiff_finetuned"
+    print("Artifact isolation OK:")
+    print(f"   pretrained baseline output : {artifact_groups['output_dir'][pretrained]}")
+    print(f"   finetuned baseline output  : {artifact_groups['output_dir'][finetuned]}")
+    print(f"   finetuned checkpoint       : {artifact_groups['checkpoint_best'][finetuned]}")
+
+
+validate_model_artifact_isolation()
 
 
 def _summary_artifact_exists():
