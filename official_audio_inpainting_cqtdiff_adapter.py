@@ -145,7 +145,7 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
         self.target_len = int(segment_samples)
         self.gap_durations_ms = list(gap_durations_ms)
         self.audio_inpainting_dir = os.path.abspath(audio_inpainting_dir)
-        self.architecture_name = "ssl_conditioned_audio_inpainting_cqtdiffplus_musicnet44k_strongcond_v2"
+        self.architecture_name = "ssl_conditioned_audio_inpainting_cqtdiffplus_musicnet44k_v1"
 
         with _prepend_path(self.audio_inpainting_dir):
             from networks.unet_cqt_oct_with_projattention_adaLN_2 import (
@@ -240,8 +240,6 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
         self.feature_dim = int(os.environ.get("CQTDIFF_ADAPTER_FEATURE_DIM", 256))
         self.freq_bins = self.n_fft // 2 + 1
         self.sigma = float(os.environ.get("CQTDIFF_ADAPTER_SIGMA", "0.1"))
-        self.condition_gate_init = float(os.environ.get("CQTDIFF_CONDITION_GATE_INIT", "-1.0"))
-        self.cond_residual_scale = float(os.environ.get("CQTDIFF_COND_RESIDUAL_SCALE", "2.0"))
 
         self.feature_encoder = nn.Sequential(
             nn.Linear(self.freq_bins * 2 + 1, 512),
@@ -260,7 +258,7 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
             nn.Linear(128, 1),
         )
         nn.init.zeros_(self.condition_gate[-1].weight)
-        nn.init.constant_(self.condition_gate[-1].bias, self.condition_gate_init)
+        nn.init.constant_(self.condition_gate[-1].bias, -2.0)
 
         self.sigma_scale_net = nn.Sequential(
             nn.Linear(1, 64),
@@ -269,12 +267,6 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
         )
         nn.init.zeros_(self.sigma_scale_net[-1].weight)
         nn.init.zeros_(self.sigma_scale_net[-1].bias)
-        print(
-            "CQT SSL conditioning config: "
-            f"gate_init={self.condition_gate_init:g} "
-            f"(initial_gate={torch.sigmoid(torch.tensor(self.condition_gate_init)).item():.3f}), "
-            f"residual_scale={self.cond_residual_scale:g}"
-        )
 
     def _pad_or_crop(self, x, length):
         if x.shape[-1] < length:
@@ -339,7 +331,6 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
         pooled = conditioning.mean(dim=1)
         gate = torch.sigmoid(self.condition_gate(pooled)).clamp(0.0, 1.0)
         conditioned_wave = gate * wave
-        scaled_conditioned_wave = self.cond_residual_scale * conditioned_wave
         if return_stats:
             stats = {
                 "condition_gate_mean": gate.detach().mean(),
@@ -347,12 +338,9 @@ class OfficialAudioInpaintingCQTDiffDecoder(nn.Module):
                 "conditioned_residual_rms": torch.sqrt(
                     conditioned_wave.detach().pow(2).mean().clamp_min(1e-12)
                 ),
-                "conditioned_residual_scaled_rms": torch.sqrt(
-                    scaled_conditioned_wave.detach().pow(2).mean().clamp_min(1e-12)
-                ),
             }
-            return scaled_conditioned_wave, stats
-        return scaled_conditioned_wave
+            return conditioned_wave, stats
+        return conditioned_wave
 
     def _conditioned_model(self, conditioning, target_len, return_stats=False):
         if return_stats:
