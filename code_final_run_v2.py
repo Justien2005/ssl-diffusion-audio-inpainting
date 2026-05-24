@@ -3755,7 +3755,7 @@ def load_training_checkpoint_if_available(decoder, optimizer, scheduler, scaler,
 EARLY_STOPPING_ENABLED = os.environ.get("EARLY_STOPPING_ENABLED", "1").lower() in {"1", "true", "yes"}
 EARLY_STOPPING_PATIENCE = int(os.environ.get("EARLY_STOPPING_PATIENCE", "5"))
 EARLY_STOPPING_MIN_DELTA = float(os.environ.get("EARLY_STOPPING_MIN_DELTA", "1e-4"))
-EARLY_STOPPING_MIN_EPOCHS = int(os.environ.get("EARLY_STOPPING_MIN_EPOCHS", "5"))
+EARLY_STOPPING_MIN_EPOCHS = int(os.environ.get("EARLY_STOPPING_MIN_EPOCHS", "10"))
 VAL_EVERY_EPOCHS = int(os.environ.get("VAL_EVERY_EPOCHS", "1"))
 
 
@@ -3789,7 +3789,7 @@ def should_early_stop(history, best_val_loss, current_epoch, model_name):
 
 
 def train_model(decoder, encoder_fn, film, train_loader, val_loader=None,
-                num_epochs=100, lr=1e-4, device="cuda", checkpoint_dir=None,
+                num_epochs=30, lr=1e-4, device="cuda", checkpoint_dir=None,
                 model_name="model", batch_size=None, dataset_fraction=None):
     """
     Training loop lengkap untuk hybrid model (encoder + FiLM + decoder).
