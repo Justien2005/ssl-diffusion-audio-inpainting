@@ -2980,7 +2980,7 @@ def build_audio_loader(ds, batch_size, shuffle, num_workers=AUTO_NUM_WORKERS):
     return DataLoader(ds, **kwargs)
 
 
-def make_dataloaders(batch_size=48, num_workers=AUTO_NUM_WORKERS, cache_audio=CACHE_AUDIO_IN_MEMORY):
+def make_dataloaders(batch_size=32, num_workers=AUTO_NUM_WORKERS, cache_audio=CACHE_AUDIO_IN_MEMORY):
     """Buat DataLoader untuk train/val/test dengan group-aware split."""
     meta_path = os.path.join(PATHS["preprocessed"], "metadata.csv")
     meta_df = pd.read_csv(meta_path)
@@ -5159,7 +5159,7 @@ else:
 
 MODEL_NAME = "baseline_cqtdiff_finetuned"
 FORCE_RETRAIN = True
-BATCH_SIZE = 48
+BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
@@ -5319,7 +5319,7 @@ else:
 MODEL_NAME = "clap_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 48
+BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 100
@@ -5450,7 +5450,7 @@ else:
 MODEL_NAME = "clap_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 48
+BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 100
@@ -5581,7 +5581,7 @@ else:
 MODEL_NAME = "audiomae_cqtdiff"
 FORCE_RETRAIN = True   # <-- True karena arsitektur model berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 48
+BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 # Stage override: instance test keeps the current 10 training epochs.
 NUM_EPOCHS = 100
@@ -5712,7 +5712,7 @@ else:
 MODEL_NAME = "audiomae_maid"
 FORCE_RETRAIN = True   # <-- True karena arsitektur/training berubah!
 # Stage override: instance memory/throughput test uses batch size 8.
-BATCH_SIZE = 48
+BATCH_SIZE = 32
 NUM_WORKERS = AUTO_NUM_WORKERS
 NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
