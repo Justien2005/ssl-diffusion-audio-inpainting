@@ -230,8 +230,13 @@ def ensure_checkpoint(ckpt_path: Path) -> None:
 
 
 def ensure_musicnet_dataset(dataset_dir: Path) -> None:
-    """Same dataset location and download/extract behavior as code_final_run_v2.py."""
+    """Skip download/extract when the Drive dataset folder is already present."""
     audio_dir = dataset_dir / "audio"
+    if dataset_dir.exists() and any(dataset_dir.iterdir()):
+        info(f"MusicNet dataset folder already exists; skip download/extract: {dataset_dir}")
+        ensure_musicnet_metadata(dataset_dir)
+        return
+
     if audio_dir.exists() and len(list(audio_dir.iterdir())) > 10:
         info(f"MusicNet dataset already exists; skip download: {audio_dir}")
         ensure_musicnet_metadata(dataset_dir)

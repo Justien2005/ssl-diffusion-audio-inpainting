@@ -1,14 +1,14 @@
 """
-Re-evaluate LSD for all reconstructed model outputs with the corrected formula.
+Re-evaluate LSD for all reconstructed model outputs with the legacy pipeline formula.
 
 This script intentionally does not run model inference. It reloads the existing
-reconstructed WAV files produced by code_final_run_v2.py, recomputes only:
-    LSD, LSD_GAP_ONLY, GAP_LSD
-and writes the same per-model result CSVs plus results/all_results.csv.
+reconstructed WAV files produced by code_final_run_v2.py, recomputes the old
+code_final_run_v2.py LSD values, and writes them next to the current LSD columns:
+    LSD_LEGACY, LSD_GAP_ONLY_LEGACY, GAP_LSD_LEGACY
 
-Correct LSD formula used here:
-    magnitude STFT, no power spectrum
-    20 * log10(magnitude ratio)
+Legacy LSD formula used here:
+    power STFT = magnitude ** 2
+    10 * log10(power ratio)
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def paths() -> dict[str, Path]:
     return {
         "base": base,
         "source_preprocessed": Path(
-            os.environ.get("BASELINE_EVAL_PREPROCESSED_DIR", base / "preprocessed")
+            os.environ.get("BASELINE_EVAL_PREPROCESSED_DIR", base / "preprocessed" / "preprocessed")
         ).resolve(),
         "preprocessed": (stage / "preprocessed").resolve(),
         "outputs": (stage / "outputs").resolve(),
@@ -249,7 +249,23 @@ def read_audio_float32(path: Path) -> np.ndarray:
     return np.ascontiguousarray(audio, dtype=np.float32)
 
 
-def load_eval_originals(preprocessed_dir: Path, n_samples: int) -> list[np.ndarray]:
+def _resolve_clean_path(clean_path_text: str, preprocessed_dir: Path) -> Path:
+    clean_path = Path(clean_path_text)
+    if clean_path.exists():
+        return clean_path
+    candidate = preprocessed_dir / clean_path.name
+    if candidate.exists():
+        return candidate
+    fail(f"File clean tidak ditemukan: {clean_path_text}")
+
+
+def load_preprocessed_data_old_method(
+    preprocessed_dir: Path,
+    n_samples: int,
+    split: str = "test",
+    gap_position: str | None = None,
+) -> tuple[list[np.ndarray], dict[int, list[dict]]]:
+    """Mirror code_final_run_v2.py load_preprocessed_data selection and gap-region logic."""
     metadata_path = preprocessed_dir / "metadata.csv"
     if not metadata_path.exists():
         fail(f"metadata.csv tidak ditemukan: {metadata_path}")
@@ -261,20 +277,42 @@ def load_eval_originals(preprocessed_dir: Path, n_samples: int) -> list[np.ndarr
         fail(f"metadata.csv tidak punya kolom source_file: {metadata_path}")
 
     splits = get_data_splits(meta_df)
+    if split not in splits:
+        fail(f"Split tidak dikenal: {split}. Pilihan: {sorted(splits)}")
     selected = _stratified_sample_table(
-        splits["test"], min(int(n_samples), len(splits["test"])), seed=DATASET_RANDOM_SEED + 2
+        splits[split], min(int(n_samples), len(splits[split])), seed=DATASET_RANDOM_SEED + 2
+    )
+
+    gap_position = (gap_position or EVAL_GAP_POSITION).strip().lower()
+    if gap_position not in {"center", "random"}:
+        fail("EVAL_GAP_POSITION harus 'center' atau 'random'.")
+
+    info(
+        f"loading originals with old pipeline method: "
+        f"{len(selected)} samples, split={split}, gap_position={gap_position}"
     )
     originals = []
-    for _, row in selected.iterrows():
-        clean_path = Path(row["clean_path"])
-        if not clean_path.exists():
-            candidate = preprocessed_dir / clean_path.name
-            if candidate.exists():
-                clean_path = candidate
+    gap_regions_by_gap = {gap_ms: [] for gap_ms in GAP_DURATIONS_MS}
+
+    for sample_index, (_, row) in enumerate(selected.iterrows()):
+        clean_path = _resolve_clean_path(str(row["clean_path"]), preprocessed_dir)
+        orig_audio = read_audio_float32(clean_path)
+        originals.append(orig_audio)
+
+        for gap_ms in GAP_DURATIONS_MS:
+            if gap_position == "center":
+                _, gap_start, gap_end = build_gap_mask_array(len(orig_audio), gap_ms)
             else:
-                fail(f"File clean tidak ditemukan: {row['clean_path']}")
-        originals.append(read_audio_float32(clean_path))
-    return originals
+                _, gap_start, gap_end = make_eval_gap_mask(
+                    len(orig_audio), gap_ms, sample_index=sample_index, sr=TARGET_SR
+                )
+            gap_regions_by_gap[gap_ms].append({
+                "gap_start": int(gap_start),
+                "gap_end": int(gap_end),
+                "gap_position": gap_position,
+            })
+
+    return originals, gap_regions_by_gap
 
 
 def load_manifest(model_name: str, p: dict[str, Path]) -> pd.DataFrame:
@@ -324,38 +362,46 @@ def load_reconstructed_from_manifest(model_name: str, manifest: pd.DataFrame, ga
     return recon_audios, regions
 
 
-def compute_lsd_fixed_cpu(original: np.ndarray, reconstructed: np.ndarray,
-                          sr: int = TARGET_SR, n_fft: int = 2048,
-                          hop_length: int = 512, gap_start: int | None = None,
-                          gap_end: int | None = None, frame_pad: int = 2) -> float:
+def compute_lsd_legacy_cpu(original: np.ndarray, reconstructed: np.ndarray,
+                           sr: int = TARGET_SR, n_fft: int = 2048,
+                           hop_length: int = 512, gap_start: int | None = None,
+                           gap_end: int | None = None, frame_pad: int = 2) -> float:
     import librosa
 
     n = min(len(original), len(reconstructed))
     o = np.asarray(original[:n], dtype=np.float32)
     r = np.asarray(reconstructed[:n], dtype=np.float32)
 
-    o_mag = np.abs(librosa.stft(o, n_fft=n_fft, hop_length=hop_length))
-    r_mag = np.abs(librosa.stft(r, n_fft=n_fft, hop_length=hop_length))
-    eps = max(1e-10, 1e-6 * float(o_mag.max()))
-    log_diff = 20.0 * (np.log10(o_mag + eps) - np.log10(r_mag + eps))
+    o_power = np.abs(librosa.stft(o, n_fft=n_fft, hop_length=hop_length)) ** 2
+    r_power = np.abs(librosa.stft(r, n_fft=n_fft, hop_length=hop_length)) ** 2
+    eps = max(1e-10, 1e-6 * float(o_power.max()))
+    log_diff = 10.0 * (np.log10(o_power + eps) - np.log10(r_power + eps))
 
     if gap_start is not None and gap_end is not None:
         f_start = max(0, int(gap_start) // hop_length - frame_pad)
-        f_end = min(o_mag.shape[1], int(gap_end) // hop_length + frame_pad + 1)
+        f_end = min(o_power.shape[1], int(gap_end) // hop_length + frame_pad + 1)
         log_diff = log_diff[:, f_start:f_end]
 
     return float(np.mean(np.sqrt(np.mean(log_diff ** 2, axis=0))))
 
 
 def _eval_device():
-    import torch
+    try:
+        import torch
+    except Exception:
+        return None
     use_gpu = os.environ.get("EVAL_USE_GPU", "1").lower() in {"1", "true", "yes", "on"}
     return torch.device("cuda" if use_gpu and torch.cuda.is_available() else "cpu")
 
 
-def compute_lsd_fixed_batch_gpu(original_audios: list[np.ndarray], reconstructed_audios: list[np.ndarray],
-                                regions: list[dict], frame_pad: int = 2,
-                                n_fft: int = 2048, hop_length: int = 512) -> np.ndarray:
+def _use_cuda_lsd() -> bool:
+    device = _eval_device()
+    return device is not None and getattr(device, "type", None) == "cuda"
+
+
+def compute_lsd_legacy_batch_gpu(original_audios: list[np.ndarray], reconstructed_audios: list[np.ndarray],
+                                 regions: list[dict], frame_pad: int = 2,
+                                 n_fft: int = 2048, hop_length: int = 512) -> np.ndarray:
     import torch
 
     device = _eval_device()
@@ -374,27 +420,28 @@ def compute_lsd_fixed_batch_gpu(original_audios: list[np.ndarray], reconstructed
     )
 
     window = torch.hann_window(n_fft, device=device)
-    o_mag = torch.stft(
+    o_power = torch.stft(
         originals, n_fft=n_fft, hop_length=hop_length, window=window, return_complex=True
-    ).abs()
-    r_mag = torch.stft(
+    ).abs().pow(2)
+    r_power = torch.stft(
         recons, n_fft=n_fft, hop_length=hop_length, window=window, return_complex=True
-    ).abs()
-    eps = torch.clamp(1e-6 * o_mag.amax(dim=(1, 2), keepdim=True), min=1e-10)
-    log_diff = 20.0 * (torch.log10(o_mag + eps) - torch.log10(r_mag + eps))
+    ).abs().pow(2)
+    eps = torch.clamp(1e-6 * o_power.amax(dim=(1, 2), keepdim=True), min=1e-10)
+    log_diff = 10.0 * (torch.log10(o_power + eps) - torch.log10(r_power + eps))
 
     scores = []
     for idx, region in enumerate(regions):
         gap_start = int(region["gap_start"])
         gap_end = int(region["gap_end"])
         f_start = max(0, gap_start // hop_length - frame_pad)
-        f_end = min(o_mag.shape[-1], gap_end // hop_length + frame_pad + 1)
+        f_end = min(o_power.shape[-1], gap_end // hop_length + frame_pad + 1)
         sample_diff = log_diff[idx, :, f_start:f_end]
         scores.append(torch.sqrt(torch.mean(sample_diff.pow(2), dim=0)).mean())
     return torch.stack(scores).detach().cpu().numpy().astype(np.float64)
 
 
-def compute_model_lsd(model_name: str, originals: list[np.ndarray], manifest: pd.DataFrame,
+def compute_model_lsd(model_name: str, originals: list[np.ndarray], gap_regions_by_gap: dict[int, list[dict]],
+                      manifest: pd.DataFrame,
                       p: dict[str, Path]) -> pd.DataFrame:
     rows = []
     for gap_ms in GAP_DURATIONS_MS:
@@ -404,19 +451,33 @@ def compute_model_lsd(model_name: str, originals: list[np.ndarray], manifest: pd
             fail(f"Tidak ada pasangan original/reconstructed untuk gap {gap_ms}ms.")
         gap_regions = []
         for idx in range(n):
-            region = regions[idx]
-            if region["gap_start"] is None or region["gap_end"] is None:
-                _, gap_start, gap_end = make_eval_gap_mask(len(originals[idx]), gap_ms, idx)
-                region = {**region, "gap_start": gap_start, "gap_end": gap_end}
+            region = gap_regions_by_gap[int(gap_ms)][idx]
+            manifest_region = regions[idx]
+            if (
+                manifest_region["gap_start"] is not None
+                and manifest_region["gap_end"] is not None
+                and (
+                    int(manifest_region["gap_start"]) != int(region["gap_start"])
+                    or int(manifest_region["gap_end"]) != int(region["gap_end"])
+                )
+            ):
+                info(
+                    f"manifest gap differs from old-method gap for {model_name} "
+                    f"gap={gap_ms}ms sample={idx}; using old-method gap region."
+                )
             gap_regions.append(region)
 
-        try:
-            lsd_scores = compute_lsd_fixed_batch_gpu(originals[:n], recon_audios[:n], gap_regions, frame_pad=2)
-            lsd_gap_scores = compute_lsd_fixed_batch_gpu(originals[:n], recon_audios[:n], gap_regions, frame_pad=0)
-        except Exception as exc:
-            info(f"GPU LSD gagal untuk gap {gap_ms}ms ({exc}); fallback CPU.")
+        use_cuda = _use_cuda_lsd()
+        if use_cuda:
+            try:
+                lsd_scores = compute_lsd_legacy_batch_gpu(originals[:n], recon_audios[:n], gap_regions, frame_pad=2)
+                lsd_gap_scores = compute_lsd_legacy_batch_gpu(originals[:n], recon_audios[:n], gap_regions, frame_pad=0)
+            except Exception as exc:
+                info(f"GPU LSD gagal untuk gap {gap_ms}ms ({exc}); fallback CPU.")
+                use_cuda = False
+        if not use_cuda:
             lsd_scores = np.asarray([
-                compute_lsd_fixed_cpu(
+                    compute_lsd_legacy_cpu(
                     originals[idx], recon_audios[idx],
                     gap_start=gap_regions[idx]["gap_start"], gap_end=gap_regions[idx]["gap_end"],
                     frame_pad=2,
@@ -424,7 +485,7 @@ def compute_model_lsd(model_name: str, originals: list[np.ndarray], manifest: pd
                 for idx in range(n)
             ], dtype=np.float64)
             lsd_gap_scores = np.asarray([
-                compute_lsd_fixed_cpu(
+                    compute_lsd_legacy_cpu(
                     originals[idx], recon_audios[idx],
                     gap_start=gap_regions[idx]["gap_start"], gap_end=gap_regions[idx]["gap_end"],
                     frame_pad=0,
@@ -435,9 +496,9 @@ def compute_model_lsd(model_name: str, originals: list[np.ndarray], manifest: pd
         rows.append({
             "gap_ms": int(gap_ms),
             "gap_position": EVAL_GAP_POSITION,
-            "LSD": round(float(np.mean(lsd_scores)), 4),
-            "LSD_GAP_ONLY": round(float(np.mean(lsd_gap_scores)), 4),
-            "GAP_LSD": round(float(np.mean(lsd_gap_scores)), 4),
+            "LSD_LEGACY": round(float(np.mean(lsd_scores)), 4),
+            "LSD_GAP_ONLY_LEGACY": round(float(np.mean(lsd_gap_scores)), 4),
+            "GAP_LSD_LEGACY": round(float(np.mean(lsd_gap_scores)), 4),
         })
     return pd.DataFrame(rows)
 
@@ -478,7 +539,7 @@ def merge_lsd_into_existing(model_name: str, lsd_df: pd.DataFrame, p: dict[str, 
     if model_path.exists():
         result_df = pd.read_csv(model_path)
     else:
-        info(f"CSV lama tidak ditemukan untuk {model_name}; membuat CSV LSD-only.")
+        info(f"CSV lama tidak ditemukan untuk {model_name}; membuat CSV legacy-LSD-only.")
         result_df = lsd_df.copy()
 
     if "gap_ms" not in result_df.columns:
@@ -494,7 +555,7 @@ def merge_lsd_into_existing(model_name: str, lsd_df: pd.DataFrame, p: dict[str, 
         if not mask.any():
             result_df = pd.concat([result_df, pd.DataFrame([row.to_dict()])], ignore_index=True)
             mask = result_df["gap_ms"].astype(int) == int(row["gap_ms"])
-        for col in ["LSD", "LSD_GAP_ONLY", "GAP_LSD"]:
+        for col in ["LSD_LEGACY", "LSD_GAP_ONLY_LEGACY", "GAP_LSD_LEGACY"]:
             result_df.loc[mask, col] = row[col]
     return result_df
 
@@ -515,6 +576,7 @@ def main() -> None:
     info(f"preprocessed  : {p['preprocessed']}")
     info(f"outputs       : {p['outputs']}")
     info(f"results       : {p['results']}")
+    info(f"LSD compute   : {'cuda' if _use_cuda_lsd() else 'cpu'}")
 
     if not p["preprocessed"].exists() and p["source_preprocessed"].exists():
         p["preprocessed"] = p["source_preprocessed"]
@@ -528,16 +590,16 @@ def main() -> None:
     n_eval_samples = infer_n_eval_samples(model_manifests)
     info(f"n_eval_samples inferred from manifests: {n_eval_samples}")
 
-    originals = load_eval_originals(p["preprocessed"], n_eval_samples)
+    originals, gap_regions_by_gap = load_preprocessed_data_old_method(p["preprocessed"], n_eval_samples)
     info(f"loaded originals: {len(originals)}")
 
     for model_name in RUN_MODEL_SELECTION:
-        info(f"Re-evaluating fixed LSD: {model_name}")
-        lsd_df = compute_model_lsd(model_name, originals, model_manifests[model_name], p)
+        info(f"Re-evaluating legacy LSD: {model_name}")
+        lsd_df = compute_model_lsd(model_name, originals, gap_regions_by_gap, model_manifests[model_name], p)
         merged_df = merge_lsd_into_existing(model_name, lsd_df, p)
         save_results_like_pipeline(merged_df, model_name, p)
 
-    info("Fixed-LSD re-evaluation complete.")
+    info("Legacy-LSD re-evaluation complete.")
 
 
 if __name__ == "__main__":

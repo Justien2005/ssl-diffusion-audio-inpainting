@@ -1,4 +1,4 @@
-﻿# Generated from: code_it.ipynb
+# Generated from: code_it.ipynb
 # Converted at: 2026-05-16T16:11:45.272Z
 # Next step (optional): refactor into modules & generate tests with RunCell
 # Quick start: pip install runcell
@@ -6155,15 +6155,15 @@ else:
 
     # Cek model mana yang sudah selesai
     available_models = all_results["model"].unique()
-    print(f"📊 Model yang tersedia: {list(available_models)}")
+    print(f"📊 Available models: {list(available_models)}")
 
     gap_durations = sorted(all_results["gap_ms"].unique())
 
     # ============================================================
-    # TABEL PERBANDINGAN
+    # FULL COMPARISON TABLE
     # ============================================================
     print("\n" + "="*70)
-    print("TABEL PERBANDINGAN LENGKAP")
+    print("FULL COMPARISON TABLE")
     print("="*70)
 
     metric_order = [
@@ -6175,11 +6175,11 @@ else:
     ]
     for metric in metric_order:
         if metric in ["LSD", "LSD_GAP_ONLY", "GAP_LSD", "GAP_MEL_DISTANCE", "FAD"]:
-            direction = "↓ lebih rendah = lebih baik"
+            direction = "lower is better"
         elif metric in ["GAP_SI_SDR", "GAP_SNR"]:
-            direction = "↑ lebih tinggi = lebih baik"
+            direction = "higher is better"
         else:
-            direction = "↑ mendekati 0 = lebih baik"
+            direction = "closer to 0 is better"
         print(f"\n{metric} ({direction}):")
         pivot = all_results.pivot(index="gap_ms", columns="model", values=metric)
         # Urutkan kolom: baseline dulu, lalu hybrid
@@ -6214,31 +6214,31 @@ else:
     metrics_info = {
         "LSD": {"title": "Log Spectral Distance (LSD)",
                 "ylabel": "LSD (dB)",
-                "note": "↓ lebih rendah = lebih baik"},
+                "note": "lower is better"},
         "LSD_GAP_ONLY": {"title": "Gap-only Log Spectral Distance",
                 "ylabel": "Gap LSD (dB)",
-                "note": "↓ lebih rendah = lebih baik"},
+                "note": "lower is better"},
         "GAP_SI_SDR": {"title": "Gap SI-SDR",
                 "ylabel": "SI-SDR (dB)",
-                "note": "↑ lebih tinggi = lebih baik"},
+                "note": "higher is better"},
         "GAP_SNR": {"title": "Gap SNR",
                 "ylabel": "SNR (dB)",
-                "note": "↑ lebih tinggi = lebih baik"},
+                "note": "higher is better"},
         "GAP_MEL_DISTANCE": {"title": "Gap Mel Spectral Distance",
                 "ylabel": "Mean |Mel dB diff|",
-                "note": "↓ lebih rendah = lebih baik"},
+                "note": "lower is better"},
         "FAD": {"title": "Frechet Audio Distance (FAD)",
                 "ylabel": "FAD Score",
-                "note": "↓ lebih rendah = lebih baik"},
+                "note": "lower is better"},
         "VISQOL_ODG": {"title": "ViSQOL Objective Difference Grade",
                        "ylabel": "VISQOL_ODG Score",
-                       "note": "↑ mendekati 0 = lebih baik"},
+                       "note": "closer to 0 is better"},
         "PEAQ_ODG": {"title": "GstPEAQ Objective Difference Grade",
                      "ylabel": "PEAQ_ODG Score",
-                     "note": "↑ mendekati 0 = lebih baik"},
+                     "note": "closer to 0 is better"},
         "GAP_WINDOW_VISQOL_ODG": {"title": "Gap-window ViSQOL ODG",
                      "ylabel": "Gap-window VISQOL_ODG",
-                     "note": "↑ mendekati 0 = lebih baik"},
+                     "note": "closer to 0 is better"},
     }
     metrics_info = {k: v for k, v in metrics_info.items() if k in metric_order}
 
@@ -6254,7 +6254,7 @@ else:
 
     for ax, (metric, info) in zip(axes, metrics_info.items()):
         # Plot baseline dan hybrid
-        # Urutan plot: hybrid dulu, baseline paling atas (zorder lebih tinggi)
+        # Plot hybrids first; draw baselines above them with higher z-order.
         plot_order = [m for m in [
             "clap_cqtdiff", "audiomae_cqtdiff", "clap_maid", "audiomae_maid",
             "baseline_cqtdiff_finetuned", "baseline_cqtdiff",
@@ -6303,7 +6303,7 @@ else:
     if "baseline_cqtdiff" in available_models:
         print("\n" + "="*72)
         print("📈 IMPROVEMENT HYBRID vs PRETRAINED BASELINE (per gap duration)")
-        print("   Positif = lebih baik dari baseline")
+        print("   Positive = better than baseline")
         print("="*72)
 
         baseline_data = all_results[all_results["model"] == "baseline_cqtdiff"]
@@ -6330,7 +6330,7 @@ else:
                     (all_results["gap_ms"] == gap_ms)
                 ].iloc[0]
 
-                # Positif selalu berarti hybrid lebih baik.
+                # Positive always means the hybrid is better.
                 deltas = [bl["LSD"] - hybrid["LSD"]]
                 if "FAD" in all_results.columns:
                     deltas.append(bl["FAD"] - hybrid["FAD"])
@@ -6344,7 +6344,7 @@ else:
     if "baseline_cqtdiff_finetuned" in available_models:
         print("\n" + "="*78)
         print("📈 CQT HYBRID vs FINE-TUNED NO-SSL BASELINE (fair SSL contribution check)")
-        print("   Positif = hybrid lebih baik dari baseline fine-tuned tanpa SSL")
+        print("   Positive = hybrid is better than the fine-tuned no-SSL baseline")
         print("="*78)
 
         ft_data = all_results[all_results["model"] == "baseline_cqtdiff_finetuned"]
